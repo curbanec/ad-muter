@@ -22,6 +22,11 @@ one or more to confirm). That is the accepted budget for Phase 1.
 **Bias**: when the evidence is ambiguous the system does nothing. A missed ad is
 annoying; muting real dialogue is worse.
 
+**The detector is a binary classifier** — a function from one second of audio
+features to "ad" or "not ad", plus a confidence. Phase 1 writes that function by
+hand; Phase 2 trains it. See [The model](#the-model) for what the features
+measure and why the decision boundary sits where it does.
+
 ## Hardware
 
 | Piece | What's confirmed working |
@@ -200,6 +205,105 @@ true` and every window is appended to `logs/features.jsonl` (or `.csv`) with its
 features, the detector's metrics, the decision, and the state. Annotate the ad
 spans later and you have a labelled set for Phase 2.
 
+## The model
+
+Strip away the plumbing and what's left is a **binary classifier**: a function
+that takes the audio features of a one-second window and outputs a guess — "ad"
+or "not ad" — with a confidence number attached. That's it. That's the whole
+model. Phase 1 implements that function with hand-written rules; Phase 2 will
+implement it with a trained one. Everything else in this repo — capture,
+confirmation, mute bookkeeping, failsafes — exists to feed that function and to
+survive its mistakes.
+
+### The two outputs, and why they're different
+
+`Decision` (`admuter/detector.py`) carries the classifier's answer twice, in two
+forms:
+
+* `ad_profile` + `confidence` — the **level**. The classifier's actual output for
+  this window: does this second of audio sound like an ad? True on *every*
+  ad-like window.
+* `event` — the **edge**. `AD_STARTED` / `AD_ENDED` / `NO_CHANGE`: the moment the
+  answer flips. Derived from the level plus temporal state.
+
+That split is the standard architecture for audio event detection: a frame-level
+classifier, then a decoding layer that turns a noisy per-frame sequence into
+clean segment boundaries. The controller consumes both — the edge opens and
+closes the state machine, the level is what it counts to confirm. A Phase 2
+model only has to produce the level honestly; the edge falls out of it.
+
+### What the features actually measure
+
+Four physical quantities, each a proxy for something about how the audio was
+mastered:
+
+| Feature | Physical meaning | Why an ad differs |
+| --- | --- | --- |
+| **RMS (dBFS)** | Integrated loudness | Ads are mastered hot — but streaming platforms loudness-normalize, so on its own this is a *weak* signal |
+| **Crest factor** (peak ÷ RMS, in dB) | Dynamic range | The money feature — see below |
+| **Spectral centroid** | Brightness: the first moment of the magnitude spectrum | Ad beds are music- and voiceover-heavy, so brighter than dialogue-dominant show audio |
+| **Silence structure** | Where the near-silent frames sit within the window | Server-side ad insertion concatenates separately encoded segments, and the join usually leaves a brief digital-silence seam |
+
+**Why crest factor carries most of the weight.** Loudness normalization is
+exactly what makes it work. Under a fixed integrated-loudness target, the only
+way to make something *sound* louder is to raise its average level without
+exceeding the peak ceiling — which means compressing and limiting the dynamic
+range. Advertising audio is mastered that way as a matter of course. So the
+normalization that neuters raw loudness as a feature is precisely what pushes
+ads into a distinctive crest-factor regime: peak and RMS collapse toward each
+other. Dialogue, with its pauses and transients, keeps them far apart. In the
+replay table you can watch `crest` fall from ~15 dB to ~2 dB across a seam while
+`rms` barely moves.
+
+### Why every threshold is relative
+
+None of these features has a meaningful absolute value. What counts as "loud"
+depends on the TV volume, the mix, the show, the genre — a nature documentary
+and an action series don't share a scale. What *does* generalize is the contrast
+between the current window and the recent past, so the detector maintains an
+exponential moving average of content features (`baseline_alpha: 0.05`, a ~20 s
+time constant) and classifies on the *deltas*. Same idea as an adaptive noise
+floor in a voice-activity detector: estimate the background, then look for
+departures from it. This is also why the detector refuses to answer at all until
+`baseline_min_windows` have gone by — a classifier with no reference frame is
+guessing.
+
+### The operating point is deliberately lopsided
+
+A binary classifier makes two kinds of mistake, and here they cost wildly
+different amounts. A false negative is a missed ad: mildly annoying. A false
+positive mutes real dialogue: it ruins the thing you're trying to watch. With a
+loss function that asymmetric, the right operating point is nowhere near the
+"balanced" one — high precision, and recall pays for it. Four mechanisms buy
+that precision:
+
+1. **Conjunction, not disjunction.** The ad profile requires louder **and** less
+   dynamic than baseline. Intersecting two conditions instead of accepting either
+   shrinks the positive region considerably.
+2. **A prior on timing.** The transition cue means the classifier's answer is
+   only acted on shortly after a silent seam — the only place an ad can actually
+   begin. Ad-like audio in the middle of a scene is ignored by construction.
+3. **Temporal integration.** `confirm_windows` requires consecutive positives.
+   Isolated flukes — one loud compressed second — die here; sustained ad audio
+   sails through. (Errors aren't independent, so this isn't literally p^N, but it
+   kills the single-window failure mode that dominates in practice.)
+4. **Hysteresis.** Entering the ad state and leaving it use different criteria
+   (`min_ad_seconds`, `ad_end_windows`), so the system can't chatter around the
+   boundary the way a single threshold would.
+
+Every knob in the tuning guide below moves this operating point. That's all
+tuning is: sliding the decision boundary along the precision/recall trade-off,
+in a system where one of those two errors is much more expensive than the other.
+
+### What Phase 2 changes
+
+Only the function. A trained model sees the same windows, outputs the same
+`Decision`, and inherits the same confirmation, hysteresis, and failsafes. What
+it gains is the ability to learn feature interactions that hand-written rules
+can't express — and to output a *calibrated* confidence, so the asymmetric loss
+above can be applied explicitly as a probability threshold rather than
+implicitly through conjunctions and counters.
+
 ## Tuning guide
 
 Two failure modes, opposite fixes. Change **one knob at a time** and re-run
@@ -271,6 +375,23 @@ never stay muted for more than ~130 s.
 
 `detector.Detector` is a Protocol with three methods (`update`, `reset`,
 `reject`). A classifier that returns a `Decision` — with both the `event` edge
-and the `ad_profile` level set — drops into `__main__.py` in place of
-`HeuristicDetector` with no changes to capture, features, controller, or the
-service unit. The feature log written by Phase 1 is the training data.
+and the `ad_profile` level set, per [The model](#the-model) — drops into
+`__main__.py` in place of `HeuristicDetector` with no changes to capture,
+features, controller, or the service unit. The feature log written by Phase 1 is
+the training data.
+
+Two constraints on any replacement:
+
+* **No clock calls.** `update` is handed a timestamp; it must never read
+  `time.monotonic()` itself. That is what lets `replay_wav.py` reproduce live
+  behaviour exactly from a WAV file.
+* **`reject()` must clear ad state without clearing what was learned.** The
+  controller calls it when it overrules an `AD_STARTED` (confirmation failed, or
+  the mute failsafe tripped). A detector that ignores it will sit in its ad state
+  and miss the next real transition.
+
+One place the seam is tight: `update` receives a `Features` — fourteen scalars —
+not raw audio. That suits a tree ensemble or a small MLP over tabular features.
+A model wanting spectrograms needs the samples to cross the boundary, most
+cleanly by adding mel bands to `Features` in `features.py`, which keeps the
+protocol and the feature log intact.
