@@ -1,0 +1,144 @@
+# .claudeignore — files excluded from ClaudeSync pushes to the claude.ai project.
+# Gitignore syntax. Goal: only source + docs reach the project knowledge base.
+
+# --- Virtualenvs & dependencies ---
+.venv/
+venv/
+env/
+ENV/
+.python-version
+site-packages/
+node_modules/
+
+# --- Python build/cache artifacts ---
+__pycache__/
+*.py[codz]
+*$py.class
+*.so
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+sdist/
+wheels/
+*.egg-info/
+*.egg
+*.manifest
+*.spec
+MANIFEST
+
+# --- Test & type-checker caches ---
+.pytest_cache/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+.hypothesis/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.benchmarks/
+
+# --- IDE & editor ---
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+
+# --- OS cruft ---
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+Thumbs.db
+desktop.ini
+
+# --- VCS & tooling internals ---
+.git/
+.claude/
+.claudesync/
+
+# --- Secrets / local config (never push these) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+credentials.json
+secrets.json
+config.local.*
+
+# --- Audio/video assets & captures (ad-muter working data) ---
+# Binary media eats the knowledge-base budget and Claude can't read it anyway.
+*.wav
+*.mp3
+*.flac
+*.aac
+*.m4a
+*.ogg
+*.opus
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm
+recordings/
+captures/
+samples/
+clips/
+fingerprints/
+
+# --- ML models & large binaries ---
+*.pt
+*.pth
+*.onnx
+*.pb
+*.tflite
+*.h5
+*.ckpt
+*.safetensors
+*.bin
+*.pkl
+*.pickle
+*.npy
+*.npz
+models/
+checkpoints/
+
+# --- Data dumps ---
+*.db
+*.sqlite
+*.sqlite3
+*.parquet
+*.feather
+data/raw/
+data/interim/
+
+# --- Logs & runtime junk ---
+*.log
+logs/
+tmp/
+temp/
+scratch/
+*.pid
+*.lock
+!poetry.lock
+!uv.lock
+
+# --- Archives ---
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+*.dmg

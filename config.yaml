@@ -1,0 +1,68 @@
+# admuter runtime configuration.
+# Every tunable in the system lives here. Unknown keys are rejected at startup,
+# so a typo fails loudly instead of silently keeping the default.
+
+audio:
+  # ALSA device for the Cubilux USB SPDIF receiver (USB 0c76:1170).
+  # `arecord -L` lists these; PortAudio also matches on the bare card name.
+  device: "plughw:CARD=Receiver,DEV=0"
+  sample_rate: 48000
+  channels: 2
+  # Analysis window. 1.0s keeps us inside the 1-2s mute latency budget.
+  window_seconds: 1.0
+  # Sub-window frame size for silence detection. Must be small enough to see a
+  # 0.2s gap inside a 1s window.
+  frame_seconds: 0.05
+  # Reconnect backoff when the device disappears (TV off, cable pulled).
+  retry_initial_seconds: 1.0
+  retry_max_seconds: 30.0
+
+detection:
+  # A frame quieter than this counts as near-silence.
+  silence_dbfs: -60.0
+
+  # --- Transition cue: short silent gap followed by an abrupt shift ---
+  require_transition_cue: true    # false = ad profile alone can fire (riskier)
+  min_gap_seconds: 0.2
+  max_gap_seconds: 1.5
+  cue_grace_seconds: 3.0          # how long a cue stays armed after the gap
+  loudness_jump_db: 3.0           # |dBFS change| across the gap
+  centroid_shift_ratio: 0.25      # or a 25% spectral centroid change
+
+  # --- Ad profile, relative to the trailing content baseline ---
+  ad_loudness_delta_db: 2.0       # ad is at least this much louder
+  ad_crest_delta_db: 2.0          # ...and this much less dynamic
+
+  # --- Content baseline (exponential moving average, one step per window) ---
+  baseline_alpha: 0.05            # ~20s time constant at 1s windows
+  baseline_min_windows: 15        # refuse to fire before the baseline settles
+
+  # --- Ad lifetime ---
+  ad_end_windows: 2               # consecutive non-ad windows that end an ad
+  min_ad_seconds: 5.0             # anti-flap floor
+  max_ad_seconds: 120.0           # detector failsafe: force AD_ENDED
+
+controller:
+  confirm_windows: 2              # ad-like windows required before muting
+  max_mute_seconds: 130.0         # hard failsafe; must be >= max_ad_seconds
+  app_check_seconds: 10.0         # how often to ask the Roku what app is up
+
+roku:
+  host: "192.168.0.12"
+  port: 8060
+  timeout_seconds: 2.0
+  netflix_only: true              # only arm detection while Netflix is on screen
+  netflix_app_ids: ["12"]
+  netflix_app_names: ["Netflix"]
+  # VolumeMute is a toggle with no state query. Set true only if the TV is
+  # already muted when the service starts.
+  assume_muted_at_start: false
+
+logging:
+  level: "INFO"
+  # Phase 2 training data: one row per window.
+  feature_log_enabled: false
+  feature_log_path: "logs/features.jsonl"
+  feature_log_format: "jsonl"     # jsonl | csv
+  verbose_decisions: false        # true = one INFO line per window, always
+  decision_heartbeat_windows: 60  # steady-state INFO line every N windows (0 = off)

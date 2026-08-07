@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# admuter working data
+samples/
+logs/
+
+# IDE and local tool state
+.idea/
+.claudesync/
