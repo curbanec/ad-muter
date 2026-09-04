@@ -111,9 +111,9 @@ unmutes the TV first if we were the ones who muted it.
 What the log looks like when it works:
 
 ```
-INFO  admuter.controller  AD_SUSPECTED (1/2) conf=0.92 — gap=0.50s then loudness +6.1dB / crest -4.3dB vs baseline
-INFO  admuter.controller  MUTE (2/2 windows) — gap=0.50s then loudness +6.1dB / crest -4.3dB vs baseline
-INFO  admuter.controller  UNMUTE — 2 non-ad windows after 61s
+INFO  admuter.controller  AD_SUSPECTED (1/1) conf=0.50 — gap=0.50s then loudness +6.1dB / crest -0.4dB vs baseline
+INFO  admuter.controller  MUTE (1/1 windows) — gap=0.50s then loudness +6.1dB / crest -0.4dB vs baseline
+INFO  admuter.controller  UNMUTE — 6 non-ad windows after 78s
 ```
 
 Per-window feature lines are DEBUG. Steady-state `NO_CHANGE` decisions are
@@ -178,7 +178,7 @@ with the TV replaced by a stub:
 ```bash
 .venv/bin/python scripts/replay_wav.py samples/mixed_20260806T203102.wav
 .venv/bin/python scripts/replay_wav.py samples/*.wav --only-changes
-.venv/bin/python scripts/replay_wav.py sample.wav --set detection.ad_crest_delta_db=3.0
+.venv/bin/python scripts/replay_wav.py sample.wav --set detection.ad_crest_delta_db=0.5
 .venv/bin/python scripts/replay_wav.py sample.wav -o /tmp/rows.csv
 ```
 
@@ -199,6 +199,21 @@ mute spans that would have been applied:
 `--set section.key=value` overrides config for one run, so you can sweep a
 threshold without editing the file. Once a value works across all your samples,
 put it in `config.yaml`.
+
+**Scoring against labels.** Once a recording has Audacity label files alongside
+the WAVs, `score_detector.py` replaces eyeballing replay output with three
+numbers — breaks caught, mute latency, and seconds of content falsely muted:
+
+```bash
+.venv/bin/python scripts/score_detector.py -i samples/movie
+.venv/bin/python scripts/score_detector.py -i samples/movie --sweep controller.confirm_windows=1,2,3
+```
+
+Window-level accuracy is the wrong lens for this system — the controller's
+confirmation and hysteresis mean isolated bad windows never reach the TV, and
+[the tuning guide](#what-one-labelled-recording-actually-showed) has a worked
+example of a change that improves per-window AUC while making the TV behave
+worse. Score the mute spans, not the windows.
 
 **Collecting training data in production**: set `logging.feature_log_enabled:
 true` and every window is appended to `logs/features.jsonl` (or `.csv`) with its
@@ -239,21 +254,39 @@ mastered:
 
 | Feature | Physical meaning | Why an ad differs |
 | --- | --- | --- |
-| **RMS (dBFS)** | Integrated loudness | Ads are mastered hot — but streaming platforms loudness-normalize, so on its own this is a *weak* signal |
-| **Crest factor** (peak ÷ RMS, in dB) | Dynamic range | The money feature — see below |
+| **RMS (dBFS)** | Integrated loudness | Ads are mastered hot — but streaming platforms loudness-normalize, so on its own this is a *weak* signal. Weak, and yet still the strongest of the four in practice |
+| **Crest factor** (peak ÷ RMS, in dB) | Dynamic range | Expected to be the money feature. On the one recording measured so far it is nearly inert — see below |
 | **Spectral centroid** | Brightness: the first moment of the magnitude spectrum | Ad beds are music- and voiceover-heavy, so brighter than dialogue-dominant show audio |
 | **Silence structure** | Where the near-silent frames sit within the window | Server-side ad insertion concatenates separately encoded segments, and the join usually leaves a brief digital-silence seam |
 
-**Why crest factor carries most of the weight.** Loudness normalization is
-exactly what makes it work. Under a fixed integrated-loudness target, the only
-way to make something *sound* louder is to raise its average level without
-exceeding the peak ceiling — which means compressing and limiting the dynamic
-range. Advertising audio is mastered that way as a matter of course. So the
-normalization that neuters raw loudness as a feature is precisely what pushes
-ads into a distinctive crest-factor regime: peak and RMS collapse toward each
-other. Dialogue, with its pauses and transients, keeps them far apart. In the
-replay table you can watch `crest` fall from ~15 dB to ~2 dB across a seam while
-`rms` barely moves.
+**Why crest factor was supposed to carry most of the weight.** Loudness
+normalization is exactly what should make it work. Under a fixed
+integrated-loudness target, the only way to make something *sound* louder is to
+raise its average level without exceeding the peak ceiling — which means
+compressing and limiting the dynamic range. Advertising audio is mastered that
+way as a matter of course. So the normalization that neuters raw loudness as a
+feature ought to push ads into a distinctive crest-factor regime: peak and RMS
+collapse toward each other, while dialogue keeps them far apart.
+
+**On the first labelled recording, it doesn't.** Per-window crest factor
+separates ads from content at AUC 0.501 — a coin flip. Median `crest_db` is
+14.14 for ad windows and 14.15 for content windows. Whatever the mastering
+argument predicts, these ads are not measurably more compressed than this
+movie's audio at a 1-second window size, and an `ad_crest_delta_db` of 2.0 dB
+vetoed nearly every real ad window: it alone cost 2 of the 3 breaks.
+
+That does not mean the feature is worthless. Reduced to a *sign* test
+(`ad_crest_delta_db: 0.0` — "no more dynamic than the baseline") it is what
+ends mutes on time; removing it entirely raises ad coverage from 51% to 87% but
+adds 43 s of false mute, because the ad state then overhangs into returning
+dialogue. It earns its place as a weak veto, not as the primary discriminator.
+
+**What actually carries the detector is the transition cue.** Near-silent seams
+are strongly ad-associated: 7.3% of ad windows contain a ≥0.2 s silent run
+versus 0.3% of content windows. Loudness alone gives a window-level precision of
+0.10; the same loudness test gated on a recent gap gives 0.75. The cue is not a
+refinement on top of the profile — it is the reason the profile is usable at
+all, which is why `require_transition_cue` should stay `true`.
 
 ### Why every threshold is relative
 
@@ -279,7 +312,9 @@ that precision:
 
 1. **Conjunction, not disjunction.** The ad profile requires louder **and** less
    dynamic than baseline. Intersecting two conditions instead of accepting either
-   shrinks the positive region considerably.
+   shrinks the positive region considerably — though see above: on the recording
+   measured so far the crest half of that conjunction contributes far less than
+   the loudness half, and set too tight it simply vetoes everything.
 2. **A prior on timing.** The transition cue means the classifier's answer is
    only acted on shortly after a silent seam — the only place an ad can actually
    begin. Ad-like audio in the middle of a scene is ignored by construction.
@@ -308,33 +343,116 @@ implicitly through conjunctions and counters.
 
 Two failure modes, opposite fixes. Change **one knob at a time** and re-run
 `replay_wav.py` over your saved samples — that is much faster than waiting for
-the next real ad break.
+the next real ad break. If you have labelled chunks, `score_detector.py` is
+better still: it runs the real detector and controller over them and scores the
+mute spans that come out.
+
+```bash
+.venv/bin/python scripts/score_detector.py -i samples/movie
+.venv/bin/python scripts/score_detector.py -i samples/movie \
+    --sweep detection.ad_end_windows=2,4,6,8
+```
+
+### What one labelled recording actually showed
+
+> **These numbers are provisional.** They come from a single sitting: twelve
+> 10-minute chunks of one movie on one service, three ad breaks, 396 ad windows
+> out of 6881. One title, one mix, one night. Several findings below directly
+> contradict what this README used to advise, which is reason to trust
+> measurement over theory — but three breaks is not a sample, and nothing here
+> has been reproduced on a second recording. The values in `config.yaml` are the
+> best available guess, not settled defaults. Re-run the sweeps on your own
+> labelled chunks before believing any of it.
+
+Scoring the shipped config against that recording, before and after tuning:
+
+| | stock | tuned |
+| --- | --- | --- |
+| breaks caught | 1 / 3 | **3 / 3** |
+| content falsely muted | 0 s | **0 s** |
+| ad audio actually muted | 10 s (3%) | **203 s (51%)** |
+| worst mute latency | +143 s | **+2.8 s** |
+
+Three things fell out of the sweeps, in descending order of how much they
+mattered:
+
+1. **Crest factor did not discriminate** (AUC 0.501), and the old default of
+   2.0 dB was a veto on nearly every real ad window. Relaxing it to a sign test
+   at `0.0` is the single largest improvement in the table above. See
+   [What the features actually measure](#what-the-features-actually-measure).
+2. **`ad_end_windows: 2` was unmuting mid-break.** These breaks are several
+   spots with silent seams between them, and the detector read each seam as
+   content. Raising it to 6 took ad coverage from 24% to 51%. Coverage well
+   under 100% on a *caught* break is the signature of this, and it is what to
+   look at before touching anything that affects whether a break is caught.
+3. **A slower baseline made the system worse, not better** — the opposite of
+   what the per-window numbers predict. Offline, `delta_rms` AUC improves
+   monotonically as `baseline_alpha` drops (0.574 at 0.05 → 0.673 at 0.005). But
+   end-to-end, lower alpha leaves the baseline stale under a loud stretch of
+   content and fires spurious mutes: 0 s of false mute at 0.05, 23 s at 0.02,
+   61 s at 0.005. Better window-level separation, worse behaviour on the TV.
+   This is why window-level AUC is the wrong thing to optimise here, and why
+   `baseline_alpha` was left at 0.05.
+
+Two things the tuning could **not** fix from config alone:
+
+* **Coverage stops at ~51% if you refuse to trade away false mutes.** The
+  remaining ad audio is in the middle of a break — mutes end at an inter-spot
+  seam and the next spot never re-fires the cue. Every setting that closed that
+  gap (`ad_end_windows: 8+`, `ad_crest_delta_db: -2` or lower,
+  `ad_loudness_delta_db: 2.5` or lower) bought coverage with overhang into
+  returning dialogue. Holding the mute *through* a seam and re-acquiring *after*
+  one are the same knob, and this threshold set cannot separate them.
+* **Mute latency on one break is +2.8 s, over the 1–2 s budget.** Of ~1,200
+  configurations searched, none caught all three breaks with zero false mutes
+  and stayed at or under 2 s. That break's audio simply takes ~3 windows to look
+  ad-like. Latency is the last of the three priorities, so it lost.
 
 ### Failure mode 1: it mutes real content (the serious one)
 
-A loud, compressed scene right after a quiet one can look like an ad. In order of
-what to reach for:
+A loud, compressed scene right after a quiet one can look like an ad. First work
+out *which* false mute you have, because they have different causes.
+`score_detector.py` prints a `spurious mute` line for a mute that never touched a
+break; anything else in the false-mute total is **overhang** — a real break's
+mute running past the end of the break into returning dialogue. On this
+recording overhang was by far the larger share.
+
+For overhang past the end of a break:
 
 | Knob | Direction | Effect |
 | --- | --- | --- |
-| `controller.confirm_windows` | ↑ 2 → 3 | Requires the ad profile to hold for another second. Cheapest, safest fix; costs ~1 s of extra latency. |
-| `detection.ad_crest_delta_db` | ↑ 2 → 3–4 | Demands genuinely squashed audio. Crest factor is the most discriminating single feature — real ads sit far below show audio. |
-| `detection.ad_loudness_delta_db` | ↑ 2 → 3–4 | Demands a bigger loudness jump over the baseline. |
-| `detection.require_transition_cue` | keep `true` | With this off, loudness alone can fire. Only turn it off if you are missing nearly every ad. |
+| `detection.ad_end_windows` | ↓ 6 → 5 | Ends the ad sooner after the profile lapses. The main overhang control; 8 and above ran ~18 s long, 10 ran ~53 s long. |
+| `detection.ad_crest_delta_db` | ↑ 0 → 0.5–1 | Tightens the veto that ends mutes. Costs coverage quickly (51% → 30% at 1.0), but costs no false mutes. |
+
+For a spurious mute in the middle of content:
+
+| Knob | Direction | Effect |
+| --- | --- | --- |
+| `detection.ad_loudness_delta_db` | ↑ 3 → 3.5–4 | Demands a bigger loudness jump over the baseline. Now the primary discriminator, so this is the first thing to reach for. Below 3.0 false mutes reappeared. |
+| `controller.confirm_windows` | ↑ 1 → 2 | Requires the ad profile to hold for another second. Historically the cheapest safe fix, and still the first thing to undo if the tuned config misbehaves — but on this recording it cost a whole break, so check what it takes with you. |
+| `detection.require_transition_cue` | keep `true` | With this off, loudness alone can fire — precision 0.10 versus 0.75. Do not turn this off. |
 | `detection.max_gap_seconds` | ↓ 1.5 → 0.8 | Long pauses in a quiet scene stop counting as seams. |
-| `detection.baseline_alpha` | ↓ 0.05 → 0.02 | Slower baseline, less influenced by a recent loud stretch. |
+| `detection.baseline_alpha` | ↑ 0.05 → 0.07 | **Note the direction** — this reverses earlier advice in this file. A *faster* baseline tracks a loud stretch of content and stops calling it an ad. Slowing it down measurably increased false mutes. |
 
 If a false mute does slip through, `detection.max_ad_seconds` and
-`controller.max_mute_seconds` bound the damage — with the defaults the TV can
-never stay muted for more than ~130 s.
+`controller.max_mute_seconds` bound the damage — with the shipped values the TV
+can never stay muted for more than ~210 s. Do not set `max_ad_seconds` below the
+longest ad break you expect: at the old default of 120 s the failsafe would have
+unmuted 37 s before the end of the 158 s break in this recording.
 
 ### Failure mode 2: it misses ads
 
+Check the coverage percentage first. Missing a break entirely and covering only
+part of one are different problems with different knobs — if breaks are being
+caught but coverage is low, you want `ad_end_windows`, not the profile
+thresholds.
+
 | Knob | Direction | Effect |
 | --- | --- | --- |
-| `detection.ad_crest_delta_db` | ↓ 2 → 1.0–1.5 | Accepts ads that are only somewhat more compressed than the show. |
-| `detection.ad_loudness_delta_db` | ↓ 2 → 1.0–1.5 | Netflix normalizes loudness fairly well, so this delta can be genuinely small. |
-| `controller.confirm_windows` | ↓ 2 → 1 | Mutes on the first ad-looking window. Faster, noticeably riskier. |
+| `detection.ad_end_windows` | ↑ 6 → 8 | **For low coverage on caught breaks.** Holds the ad state across the silent seams between spots instead of unmuting at each one. Took coverage from 24% to 51% here; watch for overhang as you raise it. |
+| `detection.ad_crest_delta_db` | ↓ 0 → -1 | Accepts ads that are no less dynamic than the show — which, on the recording measured, is most of them. Below about -2 this stops vetoing anything at all. |
+| `detection.ad_loudness_delta_db` | ↓ 3 → 2.5 | Netflix normalizes loudness fairly well, so this delta can be genuinely small. |
+| `controller.confirm_windows` | ↓ 2 → 1 | Mutes on the first ad-looking window. Faster, noticeably riskier — but it was the only way to catch the third break here. |
 | `detection.loudness_jump_db` | ↓ 3 → 2 | Arms the cue on a subtler shift across the seam. |
 | `detection.min_gap_seconds` | ↓ 0.2 → 0.1 | Catches shorter seams. Also raises the false-cue rate. |
 | `detection.cue_grace_seconds` | ↑ 3 → 5 | Gives the ad profile longer to become obvious after the seam. |
@@ -351,9 +469,13 @@ never stay muted for more than ~130 s.
 * `AD_STARTED` fires but nothing mutes → confirmation failed; the ad profile did
   not survive `confirm_windows`. Lower `confirm_windows` or relax the profile
   thresholds.
-* Ad ends late → lower `detection.ad_end_windows` to 1, or `min_ad_seconds`.
-* Ad ends early, mid-break → raise `ad_end_windows` to 3 (a quiet moment inside
-  an ad was read as content).
+* Ad ends late, running into dialogue → lower `detection.ad_end_windows`, or
+  `min_ad_seconds`.
+* Ad ends early, mid-break → raise `ad_end_windows` (a silent seam between two
+  spots, or a quiet moment inside one, was read as content). On the recording
+  measured, 2 was far too low and 5–6 was the zero-false-mute range — but that
+  range was narrow, with 4 leaking a spurious mute and 8 overhanging, so re-run
+  the sweep rather than assuming 6 transfers.
 
 ## Known limitations
 
@@ -367,6 +489,16 @@ never stay muted for more than ~130 s.
   state is kept rather than guessing.
 * **Heuristics, not understanding.** Phase 1 knows about loudness, dynamics, and
   seams. Trailers before content, and ads mastered gently, will be missed.
+* **Roughly half of a caught break still plays.** On the one recording scored,
+  the tuned config mutes 51% of ad audio: it mutes at the start of a break, and
+  after an inter-spot seam it often does not re-acquire. Raising coverage past
+  this point with the current thresholds means overhanging into returning
+  dialogue, which costs more than it buys. Holding a mute through a seam and
+  re-acquiring after one need to be separately controllable to do better —
+  that is a detector change, not a config change.
+* **Tuned on a single recording.** The shipped thresholds come from three ad
+  breaks in one movie on one service. They are a starting point; see
+  [the tuning guide](#what-one-labelled-recording-actually-showed).
 * **The baseline needs warm-up.** After a start, a capture restart, or Netflix
   becoming active, `baseline_min_windows` (15 s by default) pass before anything
   can fire.

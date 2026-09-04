@@ -30,21 +30,46 @@ detection:
   centroid_shift_ratio: 0.25      # or a 25% spectral centroid change
 
   # --- Ad profile, relative to the trailing content baseline ---
-  ad_loudness_delta_db: 2.0       # ad is at least this much louder
-  ad_crest_delta_db: 2.0          # ...and this much less dynamic
+  # Tuned on the jungle-movie recording (3 breaks); see README "Tuning".
+  # 3.0 is the bottom of the zero-false-mute range: 2.5 and below re-introduced
+  # false mutes, 4.0 only cost coverage. 3.0-3.5 scored identically.
+  ad_loudness_delta_db: 3.0
+  # NOT a magnitude test any more. Crest barely separates ads from content here
+  # (AUC 0.501; median 14.14 dB ad vs 14.15 dB content), so the old 2.0 vetoed
+  # almost every real ad window and cost 2 of 3 breaks. At 0.0 this degrades to
+  # a sign test -- "no more dynamic than the baseline" -- which is still worth
+  # keeping: it is what ends mutes on time. Loosening it to -2.0 or disabling
+  # it (-99) pushed coverage to 87% but added 43s of false mute from overhang.
+  ad_crest_delta_db: 0.0
 
   # --- Content baseline (exponential moving average, one step per window) ---
+  # Left at 0.05 deliberately. Offline, delta_rms AUC improves monotonically as
+  # alpha drops (0.574 at 0.05 -> 0.673 at 0.005), but end-to-end it gets worse:
+  # a sluggish baseline stays stale under loud content and fires spurious mutes
+  # (0.02 -> 23s false, 0.005 -> 61s). Better window separation, worse system.
   baseline_alpha: 0.05            # ~20s time constant at 1s windows
   baseline_min_windows: 15        # refuse to fire before the baseline settles
 
   # --- Ad lifetime ---
-  ad_end_windows: 2               # consecutive non-ad windows that end an ad
+  # These breaks are several spots with silent seams between them; at 2 the
+  # detector read each seam as content and unmuted mid-break (24% coverage).
+  # 5 and 6 are a zero-false-mute valley (50%/51%); 4 and below leak a spurious
+  # mute after the break, 8+ overhang into returning dialogue (18s at 8, 53s
+  # at 10). This is a narrow valley on one recording -- re-check it on new data.
+  ad_end_windows: 6
   min_ad_seconds: 5.0             # anti-flap floor
-  max_ad_seconds: 120.0           # detector failsafe: force AD_ENDED
+  # Was 120, which is shorter than a real break here (the longest labelled break
+  # is 158s), so the failsafe would have unmuted for its last 37s. 200 clears
+  # the longest observed break with margin and still bounds a stuck detector.
+  max_ad_seconds: 200.0           # detector failsafe: force AD_ENDED
 
 controller:
-  confirm_windows: 2              # ad-like windows required before muting
-  max_mute_seconds: 130.0         # hard failsafe; must be >= max_ad_seconds
+  # The riskiest value here, and the first one to put back to 2 if false mutes
+  # show up. At 2 the third break never confirmed and was missed entirely
+  # (coverage 111s vs 203s); at 1 all three are caught with 0s of false mute on
+  # this recording. Mute latency also drops ~1s, since 1 window = 1 second.
+  confirm_windows: 1              # ad-like windows required before muting
+  max_mute_seconds: 210.0         # hard failsafe; must be >= max_ad_seconds
   app_check_seconds: 10.0         # how often to ask the Roku what app is up
 
 roku:
