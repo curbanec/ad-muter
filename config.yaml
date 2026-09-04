@@ -86,7 +86,7 @@ roku:
 logging:
   level: "INFO"
   # Phase 2 training data: one row per window.
-  feature_log_enabled: false
+  feature_log_enabled: true
   feature_log_path: "logs/features.jsonl"
   feature_log_format: "jsonl"     # jsonl | csv
   verbose_decisions: false        # true = one INFO line per window, always
