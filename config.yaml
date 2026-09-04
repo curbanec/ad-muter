@@ -68,7 +68,7 @@ controller:
   # show up. At 2 the third break never confirmed and was missed entirely
   # (coverage 111s vs 203s); at 1 all three are caught with 0s of false mute on
   # this recording. Mute latency also drops ~1s, since 1 window = 1 second.
-  confirm_windows: 2              # ad-like windows required before muting
+  confirm_windows: 1              # ad-like windows required before muting
   max_mute_seconds: 210.0         # hard failsafe; must be >= max_ad_seconds
   app_check_seconds: 10.0         # how often to ask the Roku what app is up
 
