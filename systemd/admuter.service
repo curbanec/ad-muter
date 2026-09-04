@@ -1,6 +1,6 @@
 [Unit]
 Description=admuter — Netflix ad muter for Roku TV
-Documentation=https://github.com/chris/netflix-ad-muter
+Documentation=https://github.com/curbanec/ad-muter
 After=network-online.target sound.target
 Wants=network-online.target
 
@@ -10,12 +10,12 @@ User=chris
 Group=chris
 # Audio capture needs the audio group; network needed for Roku ECP.
 SupplementaryGroups=audio
-WorkingDirectory=/home/chris/netflix-ad-muter
+WorkingDirectory=/home/chris/ad-muter
 Environment=PYTHONUNBUFFERED=1
 # The package is not pip-installed; it is imported from the repo directory.
-Environment=PYTHONPATH=/home/chris/netflix-ad-muter
-ExecStart=/home/chris/netflix-ad-muter/.venv/bin/python -m admuter \
-    --config /home/chris/netflix-ad-muter/config.yaml
+Environment=PYTHONPATH=/home/chris/ad-muter
+ExecStart=/home/chris/ad-muter/.venv/bin/python -m admuter \
+    --config /home/chris/ad-muter/config.yaml
 Restart=on-failure
 RestartSec=5
 # SIGTERM lets the controller unmute the TV before exiting.

@@ -51,8 +51,8 @@ is a system package either way:
 sudo apt update
 sudo apt install -y python3-venv libportaudio2
 
-git clone <this repo> ~/netflix-ad-muter
-cd ~/netflix-ad-muter
+git clone <this repo> ~/ad-muter
+cd ~/ad-muter
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt        # add -r requirements-dev.txt for pytest
 ```
@@ -63,6 +63,18 @@ instead of `.venv/bin/python`.
 
 Dependencies are `sounddevice`, `numpy`, `requests`, `PyYAML` — nothing else.
 Python ≥ 3.11.
+
+One of those four is only half a pip dependency. `sounddevice` is a `cffi`
+binding, not an implementation: it needs the **PortAudio system library**, which
+pip will not install for you. That is what `libportaudio2` in the `apt` line
+above is for. Skip it and `pip install sounddevice` still succeeds — the failure
+arrives later, at the first import, as `OSError: PortAudio library not found`.
+`admuter` catches that and re-raises it with the fix attached:
+
+```
+sounddevice/PortAudio is unavailable. On Raspberry Pi OS:
+sudo apt install libportaudio2 && pip install sounddevice
+```
 
 ## Configure
 
@@ -121,6 +133,159 @@ deduplicated to DEBUG with an INFO heartbeat every `decision_heartbeat_windows`
 windows, so the journal does not grow by one line per second forever; set
 `logging.verbose_decisions: true` if you want literally every decision at INFO.
 
+## First run on the Pi
+
+The capture path is the one part of this system that has never run. All hardware
+testing so far went through `arecord`; the service reaches the card through
+`sounddevice`/PortAudio instead, which is a different layer with its own device
+naming. `arecord -l` listing the card is *not* evidence that PortAudio can open
+it.
+
+Work through these in order. Each step adds exactly one component, so whichever
+one fails tells you where the problem is.
+
+**1. Can PortAudio see the card?**
+
+```bash
+.venv/bin/python -m sounddevice
+```
+
+Expect the receiver in the list with a non-zero input count:
+
+```
+  1 Receiver: USB Audio (hw:1,0), ALSA (2 in, 0 out)
+```
+
+An empty list, or an `OSError` about a missing PortAudio library, means
+`libportaudio2` is not installed — see [Install](#install). This is a system
+package; pip cannot supply it.
+
+**2. Does the config load?**
+
+```bash
+.venv/bin/python -m admuter --print-config
+```
+
+Touches no hardware: it parses `config.yaml`, validates it, prints the resolved
+`Config`, and exits 0. Exit code 2 with `config error: …` means a typo or an
+unknown key. Run this after every config edit — it is the cheapest way to catch
+a mistake that would otherwise crash the service at start.
+
+**3. Does the whole chain run, without touching the TV?**
+
+```bash
+.venv/bin/python -m admuter --dry-run --log-level DEBUG
+```
+
+This is the first step that opens the sound card and talks to the Roku. Three
+lines confirm the chain is up:
+
+```
+INFO  admuter.capture  audio device 'plughw:CARD=Receiver,DEV=0' resolved to 'Receiver: USB Audio (hw:1,0)'
+INFO  admuter          connected to Living Room TV (43S455, serial X00000000000)
+INFO  admuter.capture  capturing from plughw:CARD=Receiver,DEV=0 at 48000 Hz, 2 ch, 1.00s windows
+```
+
+Then one DEBUG line per window:
+
+```
+DEBUG admuter.controller win 3 t=3.0 rms=-21.9 dBFS peak=-9.9 crest=12.0 dB centroid=1466 Hz silence=0% gap=0.00s state=CONTENT
+```
+
+Play something with dialogue and check the numbers are plausible before trusting
+any of it. The middle column is the 10th–90th percentile actually measured over
+the 6881-window jungle-movie recording, through this same optical chain — useful
+as a sanity range, not as a specification:
+
+| Field | Measured p10–p90 | Suspicious |
+| --- | --- | --- |
+| `rms` | −40 to −18 dBFS (median −28), moving with the mix | pinned at `-120.0` — the stream is open but no audio is arriving |
+| `crest` | 12 to 19 dB (median 14) | stuck near 0 dB regardless of content |
+| `centroid` | 1600 to 4000 Hz (median 2500) | `0` Hz, which only happens for a silent buffer |
+| `silence` | 0% through speech and music | 100% constantly |
+
+The one that matters is `rms`. Pinned at `-120.0` while the movie plays means the
+capture opened something that is not carrying the TV's audio — check the optical
+output is enabled and set to **PCM**, since everything downstream assumes decoded
+PCM samples. Values that move sensibly with the mix mean the chain works end to
+end, which is the whole point of this step.
+
+### What device resolution failure looks like
+
+`resolve_device()` tries the configured string first, then — for a
+`plughw:CARD=…` spec — the bare card name, which sounddevice resolves by
+case-insensitive substring match. The fallback is the untested path, so it is
+worth knowing its output on sight.
+
+On success it logs which candidate won, and the resolved name tells you whether
+the fallback was used:
+
+```
+INFO  admuter.capture  audio device 'plughw:CARD=Receiver,DEV=0' resolved to 'Receiver: USB Audio (hw:1,0)'
+```
+
+If **neither** candidate matches, `resolve_device()` raises `CaptureError`
+listing both attempts:
+
+```
+no input device matched 'plughw:CARD=Receiver,DEV=0' ('plughw:CARD=Receiver,DEV=0':
+No input device matching 'plughw:CARD=Receiver,DEV=0'; 'Receiver': No input device
+matching 'Receiver'). Run `python -m sounddevice` to list what PortAudio can see.
+```
+
+**The service does not stop when that happens**, and this is the part most
+likely to mislead you. `AudioCapture.windows()` treats it as a temporary
+condition — a vanished device is normal when the TV is off — so it logs a
+warning, backs off, and retries forever, doubling the delay from 1 s up to
+`audio.retry_max_seconds` (30 s):
+
+```
+WARNING admuter.capture  audio capture unavailable (no input device matched
+'plughw:CARD=Receiver,DEV=0' (…)); retrying in 1.0s (is the TV on?)
+```
+
+The `(is the TV on?)` suffix is generic to that retry path. A misconfigured
+`audio.device` produces the same line as a genuinely absent card, so read the
+message body, not the suffix. Repeating warnings with a growing backoff and no
+`capturing from …` line ever appearing means the device name is wrong — fix
+`audio.device` using the names from step 1.
+
+One more variant worth recognising: if the bare card name matches *more than one*
+input, sounddevice raises `Multiple input devices found for 'Receiver': …` with
+the candidates listed. Fix that by putting the specific name or the device index
+from step 1 into `audio.device` — a plain integer is accepted as an index.
+
+### The first run that can actually mute
+
+Only after the three checks above pass, and in this order:
+
+1. **`--dry-run --log-level DEBUG`, through a real ad break.** Mute and unmute
+   decisions are logged, never sent, so a mistuned detector cannot mute the TV
+   in the middle of a movie. This is the only step where a wrong threshold is
+   free. Confirm the feature lines look sane, then watch what it *would* have
+   done across an actual break — each suppressed keypress logs as:
+
+   ```
+   INFO  admuter.roku  [dry-run] would send keypress VolumeMute
+   ```
+
+   One at the start of the break and one at the end is the shape you want.
+2. **Consider `roku.netflix_only: false` for the first live test.** With gating
+   on, the detector stays disarmed unless `query/active-app` reports Netflix —
+   a second, silent failure mode that looks exactly like a detection failure. If
+   nothing ever fires and the log shows no `Netflix active — detection armed`
+   line, you are debugging ECP, not the detector. Turning gating off for one
+   session removes that variable; turn it back on afterwards.
+3. **Install the systemd unit last.** Only once a manual run has muted and
+   unmuted correctly across a real ad break. Under systemd the process restarts
+   on failure and logs to the journal, which makes exactly this class of
+   first-run problem harder to watch. See
+   [Deploy as a systemd service](#deploy-as-a-systemd-service).
+
+Note that `--dry-run` still opens the capture device and still queries the Roku
+for device info and active app — the only thing it suppresses is the keypress.
+That is what makes it a complete rehearsal rather than a partial one.
+
 ## Tests
 
 The suite runs anywhere — no Pi, no capture device, no TV. HTTP is mocked and the
@@ -137,7 +302,7 @@ audio is synthetic numpy.
 
 ## Deploy as a systemd service
 
-The unit assumes the repo at `/home/chris/netflix-ad-muter` with its venv at
+The unit assumes the repo at `/home/chris/ad-muter` with its venv at
 `.venv`. Edit `systemd/admuter.service` if your paths differ.
 
 ```bash
