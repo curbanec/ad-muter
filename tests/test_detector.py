@@ -305,6 +305,20 @@ def test_marginal_loudness_keeps_an_ad_going_once_entered(hysteresis_detector):
     assert hysteresis_detector.in_ad
 
 
+def test_confidence_is_scored_against_the_bar_that_applied(hysteresis_detector):
+    """Log-only, but it should not understate a window judged by the stay bar."""
+    t = warm(hysteresis_detector)
+    # In content: +2 dB is two thirds of the way to the 3 dB enter bar.
+    entering = hysteresis_detector.update(MARGINAL_AFTER_GAP, t)
+    assert entering.metrics["loudness_threshold_db"] == pytest.approx(3.0)
+    assert entering.confidence == pytest.approx(0.833, abs=1e-3)
+    # In an ad: the same window clears the 1 dB stay bar outright.
+    hysteresis_detector.update(AD_AFTER_GAP, t + WINDOW)
+    staying = hysteresis_detector.update(MARGINAL, t + 2 * WINDOW)
+    assert staying.metrics["loudness_threshold_db"] == pytest.approx(1.0)
+    assert staying.confidence == pytest.approx(1.0)
+
+
 def test_without_hysteresis_the_same_windows_end_the_ad():
     """Control: stay == enter reproduces the old single-threshold behaviour."""
     cfg = DetectionConfig(

@@ -250,10 +250,24 @@ def main(argv: list[str] | None = None) -> int:
         report(score(pairs, base), "current config")
         return 0
 
-    dotted, _, values = args.sweep.partition("=")
-    for value in values.split(","):
-        config = apply_overrides(base, [f"{dotted}={value}"])
+    dotted, _, sweep_values = args.sweep.partition("=")
+    values = sweep_values.split(",")
+    skipped = 0
+    for value in values:
+        try:
+            config = apply_overrides(base, [f"{dotted}={value}"])
+        except ValueError as exc:
+            # ConfigError subclasses ValueError, so this covers both a value the
+            # validator rejects and a scalar that will not coerce. A sweep that
+            # straddles a validation boundary should still report the values
+            # that are valid rather than dying partway with a traceback.
+            print(f"\n=== {dotted}={value} ===")
+            print(f"  SKIPPED — {exc}")
+            skipped += 1
+            continue
         report(score(pairs, config), f"{dotted}={value}")
+    if skipped:
+        print(f"\n{skipped} of {len(values)} values skipped as invalid")
     return 0
 
 

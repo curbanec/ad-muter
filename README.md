@@ -487,9 +487,13 @@ that precision:
    Isolated flukes — one loud compressed second — die here; sustained ad audio
    sails through. (Errors aren't independent, so this isn't literally p^N, but it
    kills the single-window failure mode that dominates in practice.)
-4. **Hysteresis.** Entering the ad state and leaving it use different criteria
-   (`min_ad_seconds`, `ad_end_windows`), so the system can't chatter around the
-   boundary the way a single threshold would.
+4. **Hysteresis.** Entering the ad state and leaving it use different criteria,
+   so the system can't chatter around the boundary the way a single threshold
+   would. Three things differ between the two directions: `min_ad_seconds` and
+   `ad_end_windows` govern *when* the state may end, and
+   `ad_stay_loudness_delta_db` sets a lower loudness bar for *staying* in an ad
+   than `ad_loudness_delta_db` demands for entering one — so a quiet spot
+   mid-break does not read as content.
 
 Every knob in the tuning guide below moves this operating point. That's all
 tuning is: sliding the decision boundary along the precision/recall trade-off,
@@ -587,6 +591,7 @@ For overhang past the end of a break:
 | Knob | Direction | Effect |
 | --- | --- | --- |
 | `detection.ad_end_windows` | ↓ 6 → 5 | Ends the ad sooner after the profile lapses. The main overhang control; 8 and above ran ~18 s long, 10 ran ~53 s long. |
+| `detection.ad_stay_loudness_delta_db` | ↑ toward `ad_loudness_delta_db` | Raises the bar for *staying* in an ad, so the state lapses sooner once the audio stops looking ad-like. Setting it equal to `ad_loudness_delta_db` disables the hysteresis entirely and restores the single-threshold behaviour. |
 | `detection.ad_crest_delta_db` | ↑ 0 → 0.5–1 | Tightens the veto that ends mutes. Costs coverage quickly (51% → 30% at 1.0), but costs no false mutes. |
 
 For a spurious mute in the middle of content:
@@ -615,6 +620,7 @@ thresholds.
 | Knob | Direction | Effect |
 | --- | --- | --- |
 | `detection.ad_end_windows` | ↑ 6 → 8 | **For low coverage on caught breaks.** Holds the ad state across the silent seams between spots instead of unmuting at each one. Took coverage from 24% to 51% here; watch for overhang as you raise it. |
+| `detection.ad_stay_loudness_delta_db` | ↓ 1 → 0 or below | **For a break that unmutes during a soft spot.** Only the *stay* bar drops, so it holds an ad through a quiet passage without making it any easier to enter one by mistake. Note this did not move coverage on the one recording measured — the gaps there were between spots, not inside them. |
 | `detection.ad_crest_delta_db` | ↓ 0 → -1 | Accepts ads that are no less dynamic than the show — which, on the recording measured, is most of them. Below about -2 this stops vetoing anything at all. |
 | `detection.ad_loudness_delta_db` | ↓ 3 → 2.5 | Netflix normalizes loudness fairly well, so this delta can be genuinely small. |
 | `controller.confirm_windows` | ↓ 2 → 1 | Mutes on the first ad-looking window. Faster, noticeably riskier — but it was the only way to catch the third break here. |
@@ -636,6 +642,10 @@ thresholds.
   thresholds.
 * Ad ends late, running into dialogue → lower `detection.ad_end_windows`, or
   `min_ad_seconds`.
+* Ad ends early during a soft passage *inside* one spot → lower
+  `ad_stay_loudness_delta_db`. Check `loudness_delta_db` against
+  `loudness_threshold_db` in the metrics: if the delta is positive but under the
+  threshold while the ad is running, the stay bar is what ended it.
 * Ad ends early, mid-break → raise `ad_end_windows` (a silent seam between two
   spots, or a quiet moment inside one, was read as content). On the recording
   measured, 2 was far too low and 5–6 was the zero-false-mute range — but that

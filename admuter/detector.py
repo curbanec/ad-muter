@@ -184,6 +184,7 @@ class HeuristicDetector:
             "cue_active": float(cue_active),
             "ad_loudness_delta_db": cfg.ad_loudness_delta_db,
             "ad_stay_loudness_delta_db": cfg.ad_stay_loudness_delta_db,
+            "loudness_threshold_db": loudness_threshold,
             **profile_metrics,
             **self.baseline.as_dict(),
         }
@@ -283,10 +284,16 @@ class HeuristicDetector:
         }
 
     def _confidence(self, metrics: dict[str, float]) -> float:
+        """Rough 0-1 score, for logging only — nothing decides on it.
+
+        Loudness is normalised against whichever bar actually applied to this
+        window, so a window that clears only the lower ``stay`` bar mid-ad is
+        not reported as barely-confident against the higher ``enter`` bar it
+        was never judged by.
+        """
         cfg = self.config
-        loud = _clamp01(
-            metrics.get("loudness_delta_db", 0.0) / max(cfg.ad_loudness_delta_db, 1e-6)
-        )
+        threshold = metrics.get("loudness_threshold_db", cfg.ad_loudness_delta_db)
+        loud = _clamp01(metrics.get("loudness_delta_db", 0.0) / max(threshold, 1e-6))
         crest = _clamp01(
             metrics.get("crest_delta_db", 0.0) / max(cfg.ad_crest_delta_db, 1e-6)
         )
