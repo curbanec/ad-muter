@@ -1,0 +1,38 @@
+# baseline score — captured 2026-09-04T20:16:04Z at git 9efe1aa
+# session: /Users/u/Movies/ad-muter-jungle-movie (session_id 20260816-netflix-movie, 12 chunks, annotation_status per session.json: in_progress)
+# command: .venv/bin/python scripts/score_detector.py -i /Users/u/Movies/ad-muter-jungle-movie
+
+12 chunks from /Users/u/Movies/ad-muter-jungle-movie
+
+=== current config ===
+  breaks caught: 3/3
+    16:51.8-19:29.5  muted at 16:52.0  (latency +0s)
+    30:13.2-31:48.6  muted at 30:14.0  (latency +1s)
+    59:46.8-62:10.2  muted at 59:48.0  (latency +1s)
+  ad audio muted:    364s of 397s (92%)
+  FALSE MUTE:        679s of content
+    spurious mute 02:41.0-02:54.0 (13s)
+    spurious mute 05:50.0-05:56.0 (6s)
+    spurious mute 06:04.0-06:21.0 (17s)
+    spurious mute 06:36.0-07:40.0 (64s)
+    spurious mute 08:23.0-08:52.0 (29s)
+    spurious mute 15:21.0-16:39.0 (78s)
+    spurious mute 20:48.0-21:06.0 (18s)
+    spurious mute 29:00.0-29:06.0 (6s)
+    spurious mute 56:54.0-57:01.0 (7s)
+    spurious mute 67:40.0-68:26.0 (46s)
+    spurious mute 72:10.0-72:16.0 (6s)
+    spurious mute 72:49.0-72:55.0 (6s)
+    spurious mute 73:03.0-73:31.0 (28s)
+    spurious mute 75:29.0-75:36.0 (7s)
+    spurious mute 75:43.0-75:50.0 (7s)
+    spurious mute 76:10.0-76:16.0 (6s)
+    spurious mute 76:25.0-78:23.0 (118s)
+    spurious mute 81:00.0-81:26.0 (26s)
+    spurious mute 88:25.0-88:31.0 (6s)
+    spurious mute 88:47.0-89:40.0 (53s)
+    spurious mute 89:46.0-89:57.0 (11s)
+    spurious mute 91:59.0-92:39.0 (40s)
+    spurious mute 98:05.0-98:11.0 (6s)
+    spurious mute 113:17.0-113:28.0 (11s)
+    spurious mute 114:21.0-114:40.0 (19s)
