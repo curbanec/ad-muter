@@ -34,6 +34,13 @@ detection:
   # 3.0 is the bottom of the zero-false-mute range: 2.5 and below re-introduced
   # false mutes, 4.0 only cost coverage. 3.0-3.5 scored identically.
   ad_loudness_delta_db: 2.0
+  # Hysteresis "stay" threshold. Entering an ad needs the full
+  # ad_loudness_delta_db over the baseline; once in one, the loudness delta only
+  # has to clear this lower bar to keep the ad alive, so a quieter spot or a soft
+  # passage mid-break does not read as content and unmute early. The crest test
+  # is unchanged. Omit it and it defaults to ad_loudness_delta_db - 2.0. Must be
+  # <= ad_loudness_delta_db.
+  ad_stay_loudness_delta_db: 0.0
   # NOT a magnitude test any more. Crest barely separates ads from content here
   # (AUC 0.501; median 14.14 dB ad vs 14.15 dB content), so the old 2.0 vetoed
   # almost every real ad window and cost 2 of 3 breaks. At 0.0 this degrades to

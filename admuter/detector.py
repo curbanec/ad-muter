@@ -121,6 +121,11 @@ class HeuristicDetector:
 
     The cue stays armed for a short grace period, so the profile does not have
     to be conclusive in the very first window after the seam.
+
+    The loudness half of the profile has hysteresis: entering an ad needs
+    ``ad_loudness_delta_db`` over the baseline, but staying in one only needs
+    the lower ``ad_stay_loudness_delta_db``, so a quieter spot mid-break does
+    not end the ad early. The crest test is the same in both states.
     """
 
     def __init__(self, config: DetectionConfig, window_seconds: float = 1.0) -> None:
@@ -163,7 +168,11 @@ class HeuristicDetector:
         gap = self._track_silence(features)
         cue_gap = self._maybe_arm_cue(features, timestamp, gap)
 
-        profile, profile_metrics = self._ad_profile(features)
+        # Hysteresis: the bar the loudness delta must clear depends on state.
+        loudness_threshold = (
+            cfg.ad_stay_loudness_delta_db if self._in_ad else cfg.ad_loudness_delta_db
+        )
+        profile, profile_metrics = self._ad_profile(features, loudness_threshold)
         cue_active = self._cue_active(timestamp)
 
         metrics: dict[str, float] = {
@@ -173,6 +182,8 @@ class HeuristicDetector:
             "gap_seconds": gap,
             "cue_gap_seconds": cue_gap,
             "cue_active": float(cue_active),
+            "ad_loudness_delta_db": cfg.ad_loudness_delta_db,
+            "ad_stay_loudness_delta_db": cfg.ad_stay_loudness_delta_db,
             **profile_metrics,
             **self.baseline.as_dict(),
         }
@@ -249,15 +260,22 @@ class HeuristicDetector:
             return False
         return True
 
-    def _ad_profile(self, features: Features) -> tuple[bool, dict[str, float]]:
-        """Does this window look like ad audio next to the content baseline?"""
+    def _ad_profile(
+        self, features: Features, loudness_threshold_db: float
+    ) -> tuple[bool, dict[str, float]]:
+        """Does this window look like ad audio next to the content baseline?
+
+        ``loudness_threshold_db`` is the bar the loudness delta must clear:
+        ``ad_loudness_delta_db`` to enter an ad, ``ad_stay_loudness_delta_db``
+        to remain in one. The crest test does not change between the two.
+        """
         cfg = self.config
         if features.is_silence or not self.baseline.ready(cfg.baseline_min_windows):
             return False, {"loudness_delta_db": 0.0, "crest_delta_db": 0.0}
 
         loudness_delta = features.rms_dbfs - float(self.baseline.rms_dbfs)
         crest_delta = float(self.baseline.crest_db) - features.crest_db
-        louder = loudness_delta >= cfg.ad_loudness_delta_db
+        louder = loudness_delta >= loudness_threshold_db
         squashed = crest_delta >= cfg.ad_crest_delta_db
         return louder and squashed, {
             "loudness_delta_db": loudness_delta,

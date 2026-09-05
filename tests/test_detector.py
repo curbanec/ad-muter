@@ -6,7 +6,7 @@ import dataclasses
 
 import pytest
 
-from admuter.config import DetectionConfig
+from admuter.config import Config, ConfigError, DetectionConfig
 from admuter.detector import Event, HeuristicDetector
 from admuter.features import Features
 
@@ -260,6 +260,75 @@ def test_baseline_reseeds_after_an_ad_ends(detector):
     before = detector.baseline.rms_dbfs
     detector.update(quieter_content, t + WINDOW)  # AD_ENDED window re-seeds
     assert detector.baseline.rms_dbfs < before
+
+
+# --------------------------------------------------------------------------- #
+# Hysteresis
+# --------------------------------------------------------------------------- #
+
+# +2 dB over the -20 dBFS content baseline, squashed like an ad. Under the
+# hysteresis config below that clears the 1 dB "stay" bar but not the 3 dB
+# "enter" bar.
+MARGINAL = make_features(rms_dbfs=-18.0, crest_db=7.0, centroid_hz=2600.0)
+MARGINAL_AFTER_GAP = dataclasses.replace(
+    MARGINAL, interior_silence_seconds=0.4, silence_ratio=0.4
+)
+
+
+@pytest.fixture
+def hysteresis_detector() -> HeuristicDetector:
+    cfg = DetectionConfig(
+        baseline_min_windows=5, ad_loudness_delta_db=3.0, ad_stay_loudness_delta_db=1.0
+    )
+    return HeuristicDetector(cfg, WINDOW)
+
+
+def test_marginal_loudness_does_not_enter_an_ad(hysteresis_detector):
+    t = warm(hysteresis_detector)
+    decision = hysteresis_detector.update(MARGINAL_AFTER_GAP, t)
+    assert decision.event is Event.NO_CHANGE
+    assert decision.ad_profile is False
+    assert decision.metrics["loudness_delta_db"] == pytest.approx(2.0)
+    assert decision.metrics["ad_loudness_delta_db"] == pytest.approx(3.0)
+    assert decision.metrics["ad_stay_loudness_delta_db"] == pytest.approx(1.0)
+    assert not hysteresis_detector.in_ad
+
+
+def test_marginal_loudness_keeps_an_ad_going_once_entered(hysteresis_detector):
+    t = warm(hysteresis_detector)
+    assert hysteresis_detector.update(AD_AFTER_GAP, t).event is Event.AD_STARTED
+    # Well past min_ad_seconds and ad_end_windows: only the stay bar holds it open.
+    decision, _ = feed(hysteresis_detector, MARGINAL, 8, start=t + WINDOW)
+    assert decision.event is Event.NO_CHANGE
+    assert decision.ad_profile is True
+    assert "ad continues" in decision.reason
+    assert hysteresis_detector.in_ad
+
+
+def test_without_hysteresis_the_same_windows_end_the_ad():
+    """Control: stay == enter reproduces the old single-threshold behaviour."""
+    cfg = DetectionConfig(
+        baseline_min_windows=5, ad_loudness_delta_db=3.0, ad_stay_loudness_delta_db=3.0
+    )
+    detector = HeuristicDetector(cfg, WINDOW)
+    t = warm(detector)
+    detector.update(AD_AFTER_GAP, t)
+    _, t = feed(detector, AD, 5, start=t + WINDOW)  # clear min_ad_seconds
+    decision, _ = feed(detector, MARGINAL, 2, start=t)  # ad_end_windows=2
+    assert decision.event is Event.AD_ENDED
+    assert not detector.in_ad
+
+
+def test_stay_threshold_defaults_to_two_db_under_enter():
+    detection = Config.from_dict({"detection": {"ad_loudness_delta_db": 3.5}}).detection
+    assert detection.ad_stay_loudness_delta_db == pytest.approx(1.5)
+
+
+def test_stay_threshold_above_enter_threshold_is_rejected():
+    with pytest.raises(ConfigError, match="ad_stay_loudness_delta_db"):
+        Config.from_dict(
+            {"detection": {"ad_loudness_delta_db": 2.0, "ad_stay_loudness_delta_db": 2.5}}
+        )
 
 
 # --------------------------------------------------------------------------- #

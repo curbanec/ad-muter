@@ -8,6 +8,7 @@ nothing.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Mapping, TypeVar
@@ -80,6 +81,11 @@ class DetectionConfig:
 
     # Ad profile, measured against the trailing content baseline
     ad_loudness_delta_db: float = 2.0
+    # Hysteresis: once in an ad, loudness only has to clear this lower bar to
+    # stay in it. NaN is the "unset" sentinel — __post_init__ replaces it with
+    # ad_loudness_delta_db - 2.0 — so the annotation stays a plain float and
+    # _coerce keeps working.
+    ad_stay_loudness_delta_db: float = math.nan
     ad_crest_delta_db: float = 2.0
 
     # Slow-moving content baseline
@@ -90,6 +96,13 @@ class DetectionConfig:
     ad_end_windows: int = 2
     min_ad_seconds: float = 5.0
     max_ad_seconds: float = 120.0
+
+    def __post_init__(self) -> None:
+        if math.isnan(self.ad_stay_loudness_delta_db):
+            # Frozen dataclass: bypass the immutability guard for the derived default.
+            object.__setattr__(
+                self, "ad_stay_loudness_delta_db", self.ad_loudness_delta_db - 2.0
+            )
 
     def validate(self) -> None:
         if self.silence_dbfs >= 0:
@@ -106,6 +119,11 @@ class DetectionConfig:
             raise ConfigError("detection.loudness_jump_db must be >= 0")
         if self.centroid_shift_ratio < 0:
             raise ConfigError("detection.centroid_shift_ratio must be >= 0")
+        if self.ad_stay_loudness_delta_db > self.ad_loudness_delta_db:
+            raise ConfigError(
+                "detection.ad_stay_loudness_delta_db must be <= "
+                "detection.ad_loudness_delta_db (it is the lower, 'stay' threshold)"
+            )
         if not 0 < self.baseline_alpha <= 1:
             raise ConfigError("detection.baseline_alpha must be in (0, 1]")
         if self.baseline_min_windows < 1:
