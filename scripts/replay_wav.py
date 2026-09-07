@@ -55,8 +55,10 @@ class StubRoku:
             self.actions.append((self.timestamp, "UNMUTE"))
         return True
 
-    def is_netflix_active(self) -> bool:
-        return True
+    def active_app(self):
+        # Never consulted: the app gate is forced off for offline replay, since
+        # there is no TV to ask and the annotations already say what was on.
+        return None
 
     def device_info(self) -> dict[str, str]:
         return {}
@@ -235,7 +237,11 @@ def main(argv: list[str] | None = None) -> int:
     logging.getLogger("admuter").setLevel(args.log_level)
 
     try:
-        config = apply_overrides(Config.load(args.config), args.overrides)
+        # No TV to query offline; force the app gate off so replay never
+        # disarms itself. Last, so a --set cannot turn it back on.
+        config = apply_overrides(
+            Config.load(args.config), args.overrides + ["roku.armed_apps_only=false"]
+        )
     except ConfigError as exc:
         print(f"config error: {exc}", file=sys.stderr)
         return 2

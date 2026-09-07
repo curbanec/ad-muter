@@ -1,10 +1,11 @@
-# admuter — Netflix ad muter (Phase 1)
+# admuter — streaming ad muter (Phase 1)
 
-Listens to the TV's optical output, notices when Netflix cuts to an ad, and mutes
-the TV over Roku ECP until the show comes back.
+Listens to the TV's optical output, notices when a streaming app cuts to an ad,
+and mutes the TV over Roku ECP until the show comes back. Scored on Netflix and
+Hulu; armed by default on the ad-supported apps listed in `roku.armed_app_ids`.
 
-Netflix stitches its ads server-side: the Roku reports the same playback state
-during an ad as during the show, so `query/media-player` is useless here. The
+These services stitch their ads server-side: the Roku reports the same playback
+state during an ad as during the show, so `query/media-player` is useless here. The
 audio, however, gives it away — there is a short near-silent seam at the join,
 and ad audio is mastered louder and much more compressed than show audio. Phase 1
 detects exactly that, with rule-based heuristics and no ML.
@@ -89,7 +90,8 @@ audio:
   device: "plughw:CARD=Receiver,DEV=0"   # `arecord -L` lists these
 roku:
   host: "192.168.0.12"
-  netflix_only: true                     # only arm detection while Netflix is on screen
+  armed_apps_only: true                  # only arm while an ad-supported app is on
+  armed_app_ids: ["12", "2285", "13"]    # Netflix, Hulu, Prime Video (see config.yaml)
 ```
 
 Validate a config without running anything:
@@ -270,12 +272,14 @@ Only after the three checks above pass, and in this order:
    ```
 
    One at the start of the break and one at the end is the shape you want.
-2. **Consider `roku.netflix_only: false` for the first live test.** With gating
-   on, the detector stays disarmed unless `query/active-app` reports Netflix —
-   a second, silent failure mode that looks exactly like a detection failure. If
-   nothing ever fires and the log shows no `Netflix active — detection armed`
-   line, you are debugging ECP, not the detector. Turning gating off for one
-   session removes that variable; turn it back on afterwards.
+2. **Consider `roku.armed_apps_only: false` for the first live test.** With
+   gating on, the detector stays disarmed unless `query/active-app` reports one
+   of `roku.armed_app_ids` — a second, silent failure mode that looks exactly
+   like a detection failure. If nothing ever fires and the log shows no
+   `… active — detection armed` line, you are debugging ECP, not the detector.
+   Turning gating off for one session removes that variable; turn it back on
+   afterwards. Confirm the ids for your own TV with
+   `curl http://<roku>:8060/query/apps` — they are what the gate matches on.
 3. **Install the systemd unit last.** Only once a manual run has muted and
    unmuted correctly across a real ad break. Under systemd the process restarts
    on failure and logs to the journal, which makes exactly this class of
@@ -298,7 +302,7 @@ audio is synthetic numpy.
 
 `tests/test_features.py` covers the DSP, `tests/test_detector.py` the heuristics,
 `tests/test_roku.py` the ECP client (including the toggle-state bookkeeping), and
-`tests/test_controller.py` the state machine, failsafes, and Netflix gating.
+`tests/test_controller.py` the state machine, failsafes, and app gating.
 
 ## Deploy as a systemd service
 
@@ -659,9 +663,13 @@ thresholds.
   remote while the service is running, the two can desync — restart the service
   while the TV is unmuted to re-sync (or set `roku.assume_muted_at_start: true`
   if it is muted at start).
-* **Netflix gating is best-effort.** `query/active-app` tells us Netflix is on
+* **App gating is best-effort.** `query/active-app` tells us which app is on
   screen, not that something is playing. If the query fails, the previous armed
-  state is kept rather than guessing.
+  state is kept rather than guessing. Switching between two armed apps resets
+  the detector: they are different services with different levels.
+* **Arming an ad-free app is all downside.** On a service with no ad breaks,
+  every mute is a false one and there is nothing to catch in return. Apple TV
+  and MGM+ are left out of `roku.armed_app_ids` for exactly this reason.
 * **Heuristics, not understanding.** Phase 1 knows about loudness, dynamics, and
   seams. Trailers before content, and ads mastered gently, will be missed.
 * **Roughly half of a caught break still plays.** On the one recording scored,
@@ -674,9 +682,10 @@ thresholds.
 * **Tuned on a single recording.** The shipped thresholds come from three ad
   breaks in one movie on one service. They are a starting point; see
   [the tuning guide](#what-one-labelled-recording-actually-showed).
-* **The baseline needs warm-up.** After a start, a capture restart, or Netflix
-  becoming active, `baseline_min_windows` (15 s by default) pass before anything
-  can fire.
+* **The baseline needs warm-up.** After a start, a capture restart, or an armed
+  app becoming active, `baseline_min_windows` (15 s by default) pass before the
+  *relative* profile can fire. The absolute profile (`detection.ad_absolute_dbfs`)
+  does not wait, which is how a break starting at 00:00 gets caught at all.
 
 ## Phase 2 hooks
 

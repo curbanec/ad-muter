@@ -49,6 +49,29 @@ detection:
   # it (-99) pushed coverage to 87% but added 43s of false mute from overhang.
   ad_crest_delta_db: -99.0
 
+  # --- Ad profile, absolute ---
+  # Set, so the loudness half of the profile is judged against a fixed dBFS bar
+  # rather than the baseline delta above. The delta measure defeats itself on
+  # long breaks: baseline_alpha is an EMA over recent audio, so two minutes into
+  # a break the baseline has climbed to meet the ad and the delta decays toward
+  # zero while the ad is still playing. That is what produced 836s/hr of false
+  # mute and "catches" with -150s latency (a spurious mute that happened to still
+  # be open when the break arrived).
+  #
+  # -23.0 was picked from the per-window features, not by sweeping: it is the
+  # best single split on each of the three annotated sessions taken separately
+  # (netflix movie -23.5, hulu new-girl -23.0, hulu schitts-creek -23.5). The
+  # sweep then agreed -- it is the only value that catches all 11 breaks.
+  # Tightening to -22.0 buys 82s/hr of false mute and costs a whole break.
+  ad_absolute_dbfs: -23.0
+  ad_stay_absolute_dbfs: -25.0    # hysteresis partner; omit to get this - 2.0
+  # Median of the trailing N windows before the absolute test. Raw per-window
+  # loudness puts 54% of content inside the ad range; at 9 windows that is 17%,
+  # because ads come in contiguous blocks and content spikes do not. Swept
+  # 3/5/9/15/21: 9 was the only setting holding 11/11 breaks at 89% coverage,
+  # and past ~15 the median starts straddling break boundaries and decays again.
+  loudness_median_windows: 9
+
   # --- Content baseline (exponential moving average, one step per window) ---
   # Left at 0.05 deliberately. Offline, delta_rms AUC improves monotonically as
   # alpha drops (0.574 at 0.05 -> 0.673 at 0.005), but end-to-end it gets worse:
@@ -71,11 +94,14 @@ detection:
   max_ad_seconds: 200.0           # detector failsafe: force AD_ENDED
 
 controller:
-  # The riskiest value here, and the first one to put back to 2 if false mutes
-  # show up. At 2 the third break never confirmed and was missed entirely
-  # (coverage 111s vs 203s); at 1 all three are caught with 0s of false mute on
-  # this recording. Mute latency also drops ~1s, since 1 window = 1 second.
-  confirm_windows: 1              # ad-like windows required before muting
+  # Was 1, which meant a single ad-like second could mute the TV -- the source of
+  # the pile of exactly-6s spurious mutes in the old scores (1 trigger + the 5s
+  # min_ad_seconds hold). Safe to raise now that the absolute profile no longer
+  # needs a lucky single window to fire. Trades latency for false mute almost
+  # linearly and holds 11/11 breaks throughout: 3 -> +7s / 326s per hour,
+  # 5 -> +9s / 304s, 8 -> +12s / 267s, 12 -> +16s / 223s. Raise it if false mutes
+  # bother you more than hearing the first few seconds of an ad.
+  confirm_windows: 5              # ad-like windows required before muting
   max_mute_seconds: 210.0         # hard failsafe; must be >= max_ad_seconds
   app_check_seconds: 10.0         # how often to ask the Roku what app is up
 
@@ -83,9 +109,42 @@ roku:
   host: "192.168.0.12"
   port: 8060
   timeout_seconds: 2.0
-  netflix_only: true              # only arm detection while Netflix is on screen
-  netflix_app_ids: ["12"]
-  netflix_app_names: ["Netflix"]
+  # Detection only runs while one of these apps is on screen. Keep this on: it
+  # is a safety gate, not a Netflix preference. Unarmed, the detector mutes
+  # against anything the TV plays -- Spotify (loud, compressed, reads as ad
+  # audio almost continuously), a console on HDMI, live TV, screensavers -- none
+  # of which it was tuned on and none of which have ad breaks to catch.
+  #
+  # IDs came from this TV: curl http://192.168.0.12:8060/query/apps
+  # Run that again after installing an app; ids are per-device for sideloads and
+  # stable for store channels. Names are a fallback match, case-insensitive, so
+  # the gate still works if an id changes under us.
+  armed_apps_only: true
+  armed_app_ids:
+    - "12"        # Netflix          (ad tier)
+    - "2285"      # Hulu
+    - "13"        # Prime Video
+    - "593099"    # Peacock TV
+    - "61322"     # HBO Max          (ad tier)
+    - "31440"     # Paramount Plus   (ad tier)
+    - "291097"    # Disney Plus      (ad tier)
+    - "151908"    # The Roku Channel (free, ad-supported)
+  armed_app_names:
+    - "Netflix"
+    - "Hulu"
+    - "Prime Video"
+    - "Peacock TV"
+    - "HBO Max"
+    - "Paramount Plus"
+    - "Disney Plus"
+    - "The Roku Channel"
+  # Deliberately NOT armed, all installed on this TV:
+  #   837 YouTube, 195316 YouTube TV -- ad structure is nothing like a TV break
+  #     (short pre-rolls, skippable) and min/max_ad_seconds do not fit it.
+  #   22297 Spotify Music -- mastered as loud as any ad; it would mute constantly.
+  #   261472 MGM+, 551012 Apple TV -- effectively ad-free, so every mute there
+  #     would be a false one and there is nothing to catch in return.
+  #   tvinput.* (HDMI 1-3, AV, Live TV), 123095 Aquatic Life, 773622 Backdrops.
   # VolumeMute is a toggle with no state query. Set true only if the TV is
   # already muted when the service starts.
   assume_muted_at_start: false

@@ -88,6 +88,33 @@ class DetectionConfig:
     ad_stay_loudness_delta_db: float = math.nan
     ad_crest_delta_db: float = 2.0
 
+    # Absolute loudness profile. NaN (the default) leaves this off and the ad
+    # profile stays purely relative to the baseline, as it always was.
+    #
+    # Set it and the loudness half of the profile switches from "how far above
+    # the trailing baseline" to "how loud, full stop". The delta test defeats
+    # itself on long breaks: the baseline is an EMA of recent audio, so two
+    # minutes into an ad it has drifted up to meet the ad and the delta decays
+    # toward zero exactly when the ad is still playing. Absolute loudness does
+    # not decay, because it measures a property of the ad itself -- ads are
+    # mastered to the loudness ceiling.
+    #
+    # -23.0 was the best single split on all three annotated sessions
+    # independently (netflix movie -23.5, hulu new-girl -23.0, hulu schitts-creek
+    # -23.5), which is why a fixed number is defensible here at all. It assumes a
+    # stable capture level; S/PDIF PCM out is a fixed digital level, so TV volume
+    # does not move it, but a different adapter or receiver would.
+    ad_absolute_dbfs: float = math.nan
+    # Hysteresis partner for the above, same idea as ad_stay_loudness_delta_db.
+    # Unset -> ad_absolute_dbfs - 2.0.
+    ad_stay_absolute_dbfs: float = math.nan
+    # Windows of trailing rms_dbfs to take a median over before the absolute
+    # test. 1 disables smoothing. Per-window loudness overlaps content 54% of
+    # the time; a 15-window median cuts that to 17% because ads arrive in
+    # contiguous blocks and content spikes do not. Past ~30 the window starts
+    # straddling ad/content boundaries and separation gets worse again.
+    loudness_median_windows: int = 1
+
     # Slow-moving content baseline
     baseline_alpha: float = 0.05
     baseline_min_windows: int = 15
@@ -102,6 +129,12 @@ class DetectionConfig:
             # Frozen dataclass: bypass the immutability guard for the derived default.
             object.__setattr__(
                 self, "ad_stay_loudness_delta_db", self.ad_loudness_delta_db - 2.0
+            )
+        if math.isnan(self.ad_stay_absolute_dbfs) and not math.isnan(
+            self.ad_absolute_dbfs
+        ):
+            object.__setattr__(
+                self, "ad_stay_absolute_dbfs", self.ad_absolute_dbfs - 2.0
             )
 
     def validate(self) -> None:
@@ -124,6 +157,22 @@ class DetectionConfig:
                 "detection.ad_stay_loudness_delta_db must be <= "
                 "detection.ad_loudness_delta_db (it is the lower, 'stay' threshold)"
             )
+        if not math.isnan(self.ad_absolute_dbfs):
+            if self.ad_absolute_dbfs >= 0:
+                raise ConfigError("detection.ad_absolute_dbfs must be negative (dBFS)")
+            if self.ad_stay_absolute_dbfs > self.ad_absolute_dbfs:
+                raise ConfigError(
+                    "detection.ad_stay_absolute_dbfs must be <= "
+                    "detection.ad_absolute_dbfs (it is the lower, 'stay' threshold)"
+                )
+        elif not math.isnan(self.ad_stay_absolute_dbfs):
+            raise ConfigError(
+                "detection.ad_stay_absolute_dbfs is set but "
+                "detection.ad_absolute_dbfs is not; the stay threshold alone does "
+                "nothing"
+            )
+        if self.loudness_median_windows < 1:
+            raise ConfigError("detection.loudness_median_windows must be >= 1")
         if not 0 < self.baseline_alpha <= 1:
             raise ConfigError("detection.baseline_alpha must be in (0, 1]")
         if self.baseline_min_windows < 1:
@@ -162,9 +211,15 @@ class RokuConfig:
     host: str = "192.168.0.12"
     port: int = 8060
     timeout_seconds: float = 2.0
-    netflix_only: bool = True
-    netflix_app_ids: list[str] = field(default_factory=lambda: ["12"])
-    netflix_app_names: list[str] = field(default_factory=lambda: ["Netflix"])
+    # Detection only runs while one of the armed apps is on screen. This is a
+    # safety gate, not a Netflix preference: unarmed, the detector would mute
+    # against music apps, game consoles on HDMI, live TV and screensavers, none
+    # of which it was tuned on. Set armed_apps_only false to run everywhere.
+    armed_apps_only: bool = True
+    armed_app_ids: list[str] = field(default_factory=lambda: ["12", "2285", "13"])
+    armed_app_names: list[str] = field(
+        default_factory=lambda: ["Netflix", "Hulu", "Prime Video"]
+    )
     assume_muted_at_start: bool = False
 
     @property
@@ -178,9 +233,10 @@ class RokuConfig:
             raise ConfigError("roku.port must be a valid TCP port")
         if self.timeout_seconds <= 0:
             raise ConfigError("roku.timeout_seconds must be positive")
-        if self.netflix_only and not (self.netflix_app_ids or self.netflix_app_names):
+        if self.armed_apps_only and not (self.armed_app_ids or self.armed_app_names):
             raise ConfigError(
-                "roku.netflix_only is true but no netflix_app_ids/netflix_app_names given"
+                "roku.armed_apps_only is true but no roku.armed_app_ids or "
+                "roku.armed_app_names given, so detection could never arm"
             )
 
 

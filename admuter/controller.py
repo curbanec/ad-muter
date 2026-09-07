@@ -71,8 +71,11 @@ class Controller:
         self._muted_at: float | None = None
         self._we_muted = False
         self._unmute_pending: str | None = None
-        self._armed = not config.roku.netflix_only
+        self._armed = not config.roku.armed_apps_only
         self._armed_checked_at: float | None = None
+        # Which armed app we last saw, so a switch between two of them is not
+        # mistaken for "nothing changed".
+        self._armed_app: str = ""
         self._last_reason = ""
         self._windows_seen = 0
 
@@ -82,10 +85,11 @@ class Controller:
 
     def run(self) -> None:
         log.info(
-            "admuter starting: %s -> %s (netflix_only=%s)",
+            "admuter starting: %s -> %s (armed_apps_only=%s, apps=%s)",
             self.config.audio.device,
             self.config.roku.base_url,
-            self.config.roku.netflix_only,
+            self.config.roku.armed_apps_only,
+            ", ".join(self.config.roku.armed_app_names) or "by id only",
         )
         try:
             for window in self.capture.windows():
@@ -254,11 +258,12 @@ class Controller:
             self._to_content()
 
     # ------------------------------------------------------------------ #
-    # Netflix gating
+    # App gating
     # ------------------------------------------------------------------ #
 
     def _check_armed(self, timestamp: float) -> bool:
-        if not self.config.roku.netflix_only:
+        cfg = self.config.roku
+        if not cfg.armed_apps_only:
             return True
         interval = self.config.controller.app_check_seconds
         due = (
@@ -267,18 +272,27 @@ class Controller:
         )
         if due:
             self._armed_checked_at = timestamp
-            active = self.roku.is_netflix_active()
-            if active is None:
+            app = self.roku.active_app()
+            if app is None:
+                # "We could not ask" is not "nothing is playing". Hold the last
+                # known state rather than disarming mid-ad on a dropped packet.
                 log.debug("could not query active app — keeping armed=%s", self._armed)
-            elif active != self._armed:
+                return self._armed
+            armed = app.matches(cfg.armed_app_ids, cfg.armed_app_names)
+            identity = app.app_id or app.name
+            if armed and identity != self._armed_app:
+                # Either newly armed, or switched straight from one armed app to
+                # another. Both are a new service with its own loudness levels,
+                # so nothing learned on the previous one should carry over.
+                log.info("%s active — detection armed", app.name or identity)
+                self.detector.reset()
+            elif not armed and self._armed:
                 log.info(
-                    "Netflix %s — detection %s",
-                    "active" if active else "not active",
-                    "armed" if active else "disarmed",
+                    "%s active — detection disarmed",
+                    app.name or identity or "unknown app",
                 )
-                self._armed = active
-                if active:
-                    self.detector.reset()
+            self._armed = armed
+            self._armed_app = identity if armed else ""
         return self._armed
 
     def _disarm(self) -> None:

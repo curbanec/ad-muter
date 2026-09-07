@@ -220,6 +220,8 @@ __marimo__/
 # admuter working data
 samples/
 logs/
+# per-window CSVs; regenerate with scripts/build_dataset.py
+data/
 
 # IDE and local tool state
 .idea/

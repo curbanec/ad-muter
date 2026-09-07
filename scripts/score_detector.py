@@ -13,6 +13,7 @@ service experiences it — and compares the resulting mute spans to the labels.
     python scripts/score_detector.py -i samples/movie
     python scripts/score_detector.py -i samples/movie --set detection.baseline_alpha=0.01
     python scripts/score_detector.py -i samples/movie --sweep detection.ad_crest_delta_db=-99,0,2
+    python scripts/score_detector.py -i samples/movie -i samples/sitcom   # pooled
 
 Three numbers decide whether it works:
 
@@ -25,6 +26,7 @@ Three numbers decide whether it works:
 from __future__ import annotations
 
 import argparse
+import statistics
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,6 +45,7 @@ from build_dataset import (  # noqa: E402
     Span,
     pair_chunks,
     parse_labels,
+    read_session,
 )
 
 DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "config.yaml"
@@ -75,8 +78,10 @@ class RecordingRoku:
             self.spans[-1][1] = self.timestamp
         return True
 
-    def is_netflix_active(self) -> bool:
-        return True
+    def active_app(self):
+        # Never consulted: the app gate is forced off for offline replay, since
+        # there is no TV to ask and the annotations already say what was on.
+        return None
 
     def close(self) -> None:
         pass
@@ -203,6 +208,32 @@ def report(result: dict, label: str = "") -> None:
         print(f"    spurious mute {clock(s)}-{clock(e)} ({e - s:.0f}s)")
 
 
+def report_totals(results: list[tuple[str, dict]]) -> None:
+    """Pool the per-session outcomes into the numbers you tune against.
+
+    Sessions are separate recordings scored independently, so only the outcomes
+    add up -- never the clocks. False mute is also given per hour: sessions
+    differ in length, and a raw total silently weights the longest one.
+    """
+    breaks = [b for _, result in results for b in result["breaks"]]
+    hit = sum(1 for _, start in breaks if start is not None)
+    latencies = [start - span.start for span, start in breaks if start is not None]
+    ad = sum(result["ad_seconds"] for _, result in results)
+    covered = sum(result["covered"] for _, result in results)
+    false_muted = sum(result["false_muted"] for _, result in results)
+    duration = sum(result["duration"] for _, result in results)
+
+    print(f"\n  == TOTAL: {len(results)} sessions, {duration / 60:.0f} min ==")
+    print(f"    breaks caught:     {hit}/{len(breaks)}")
+    if latencies:
+        print(f"    latency:           median {statistics.median(latencies):+.0f}s"
+              f"  worst {max(latencies):+.0f}s")
+    cov = 100.0 * covered / ad if ad else 0.0
+    print(f"    ad audio muted:    {covered:.0f}s of {ad:.0f}s ({cov:.0f}%)")
+    per_hour = 3600.0 * false_muted / duration if duration else 0.0
+    print(f"    FALSE MUTE:        {false_muted:.0f}s ({per_hour:.1f}s per hour)")
+
+
 def apply_overrides(config: Config, overrides: list[str]) -> Config:
     import dataclasses
     sections = {n: dataclasses.asdict(getattr(config, n))
@@ -227,7 +258,10 @@ def apply_overrides(config: Config, overrides: list[str]) -> Config:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("-i", "--indir", type=Path, default=Path("."))
+    parser.add_argument("-i", "--indir", type=Path, action="append", dest="indirs",
+                        metavar="DIR",
+                        help="directory of WAVs + .ads.txt files; repeat the flag "
+                             "to score several sessions together")
     parser.add_argument("-c", "--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--set", dest="overrides", action="append", default=[],
                         metavar="section.key=value")
@@ -238,16 +272,42 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     setup_logging(args.log_level)
 
+    indirs = args.indirs or [Path(".")]
     try:
-        base = apply_overrides(Config.load(args.config), args.overrides)
-        pairs = pair_chunks(args.indir)
+        # The app gate guards the live service against muting things it was
+        # never tuned on. Offline there is no TV to query, so force it off --
+        # last, so it cannot be re-enabled by a --set and silently score zeros.
+        base = apply_overrides(
+            Config.load(args.config), args.overrides + ["roku.armed_apps_only=false"]
+        )
+        # One entry per directory. Each is its own recording, so score() below
+        # gets a fresh detector and baseline for each; carrying state across
+        # unrelated sessions would let one night's audio set the other's floor.
+        sessions = [
+            (read_session(d).get("session_id") or d.resolve().name, pair_chunks(d))
+            for d in indirs
+        ]
     except (ConfigError, DatasetError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    print(f"{len(pairs)} chunks from {args.indir}")
+    chunks = sum(len(pairs) for _, pairs in sessions)
+    print(f"{chunks} chunks from {len(sessions)} session(s)")
+
+    def run(config: Config, label: str) -> None:
+        results = [(name, score(pairs, config)) for name, pairs in sessions]
+        if len(results) == 1:
+            report(results[0][1], label)
+            return
+        if label:
+            print(f"\n=== {label} ===")
+        for name, result in results:
+            print(f"\n  [{name}]")
+            report(result)
+        report_totals(results)
+
     if not args.sweep:
-        report(score(pairs, base), "current config")
+        run(base, "current config")
         return 0
 
     dotted, _, sweep_values = args.sweep.partition("=")
@@ -265,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  SKIPPED — {exc}")
             skipped += 1
             continue
-        report(score(pairs, config), f"{dotted}={value}")
+        run(config, f"{dotted}={value}")
     if skipped:
         print(f"\n{skipped} of {len(values)} values skipped as invalid")
     return 0

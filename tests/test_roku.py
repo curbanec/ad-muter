@@ -149,29 +149,29 @@ def test_dry_run_never_posts(config):
 # --------------------------------------------------------------------------- #
 
 
-def test_active_app_parses_netflix(config):
+def test_active_app_parses_an_armed_app(config):
     roku = client(config, FakeSession(ACTIVE_APP_NETFLIX))
     app = roku.active_app()
     assert app == ActiveApp(app_id="12", name="Netflix")
-    assert roku.is_netflix_active() is True
+    assert roku.is_armed_app_active() is True
 
 
 def test_active_app_parses_home_screen(config):
     roku = client(config, FakeSession(ACTIVE_APP_HOME))
     assert roku.active_app() == ActiveApp(app_id="", name="Roku")
-    assert roku.is_netflix_active() is False
+    assert roku.is_armed_app_active() is False
 
 
-def test_netflix_matches_by_name_when_the_app_id_differs(config):
+def test_armed_app_matches_by_name_when_the_app_id_differs(config):
     body = '<active-app><app id="99">netflix</app></active-app>'
     roku = client(config, FakeSession(body))
-    assert roku.is_netflix_active() is True
+    assert roku.is_armed_app_active() is True
 
 
-def test_is_netflix_active_returns_none_when_unreachable(config):
+def test_is_armed_app_active_returns_none_when_unreachable(config):
     """None means 'could not ask' — the controller must not treat it as False."""
     roku = client(config, FakeSession(fail=True))
-    assert roku.is_netflix_active() is None
+    assert roku.is_armed_app_active() is None
 
 
 def test_device_info_is_flattened(config):
@@ -188,7 +188,7 @@ def test_device_info_returns_none_on_error(config):
 def test_malformed_xml_does_not_raise(config):
     roku = client(config, FakeSession("<active-app><app>truncated"))
     assert roku.active_app() is None
-    assert roku.is_netflix_active() is None
+    assert roku.is_armed_app_active() is None
 
 
 def test_http_error_status_is_treated_as_failure(config):

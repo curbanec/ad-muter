@@ -12,6 +12,12 @@ from admuter.config import Config
 from admuter.controller import Controller, State
 from admuter.detector import Decision, Event
 from admuter.features import Features
+from admuter.roku import ActiveApp
+
+NETFLIX = "12"
+HULU = "2285"
+YOUTUBE = "837"  # installed, deliberately not in the armed list
+_APP_NAMES = {NETFLIX: "Netflix", HULU: "Hulu", YOUTUBE: "YouTube"}
 
 SR = 48000
 
@@ -48,9 +54,10 @@ class ScriptedDetector:
 class FakeRoku:
     """Same surface as RokuClient, with failure injection."""
 
-    def __init__(self, netflix: bool | None = True, fail: bool = False) -> None:
+    def __init__(self, app: str | None = "12", fail: bool = False) -> None:
         self.is_muted = False
-        self.netflix = netflix
+        # Roku app id on screen; None models a query that failed.
+        self.app = app
         self.fail = fail
         self.toggles = 0
         self.app_queries = 0
@@ -73,9 +80,11 @@ class FakeRoku:
         self.toggles += 1
         return True
 
-    def is_netflix_active(self) -> bool | None:
+    def active_app(self) -> ActiveApp | None:
         self.app_queries += 1
-        return self.netflix
+        if self.app is None:
+            return None
+        return ActiveApp(app_id=self.app, name=_APP_NAMES.get(self.app, ""))
 
 
 class FakeCapture:
@@ -92,7 +101,7 @@ class FakeCapture:
 
 def make_config(**overrides) -> Config:
     data = {
-        "roku": {"netflix_only": False},
+        "roku": {"armed_apps_only": False},
         "controller": {"confirm_windows": 2, "max_mute_seconds": 130.0},
     }
     for section, values in overrides.items():
@@ -258,9 +267,9 @@ def test_unmute_failure_is_retried_on_the_next_window():
 # --------------------------------------------------------------------------- #
 
 
-def test_detection_is_disarmed_when_netflix_is_not_active():
-    config = make_config(roku={"netflix_only": True}, controller={"app_check_seconds": 0.0})
-    roku = FakeRoku(netflix=False)
+def test_detection_is_disarmed_when_no_armed_app_is_active():
+    config = make_config(roku={"armed_apps_only": True}, controller={"app_check_seconds": 0.0})
+    roku = FakeRoku(app=YOUTUBE)
     controller, detector, _ = build(
         [(Event.AD_STARTED, True)], config=config, roku=roku
     )
@@ -269,32 +278,59 @@ def test_detection_is_disarmed_when_netflix_is_not_active():
     assert roku.is_muted is False
 
 
-def test_arming_when_netflix_appears_resets_the_detector():
-    config = make_config(roku={"netflix_only": True}, controller={"app_check_seconds": 0.0})
-    roku = FakeRoku(netflix=False)
+def test_arming_when_an_armed_app_appears_resets_the_detector():
+    config = make_config(roku={"armed_apps_only": True}, controller={"app_check_seconds": 0.0})
+    roku = FakeRoku(app=YOUTUBE)
     controller, detector, _ = build(
         [(Event.NO_CHANGE, False)], config=config, roku=roku
     )
     controller.process_window(window(0))
     assert detector.calls == 0
 
-    roku.netflix = True
+    roku.app = NETFLIX
     controller.process_window(window(1))
     assert detector.resets == 1
     assert detector.calls == 1
 
 
-def test_leaving_netflix_while_muted_unmutes():
+def test_switching_between_two_armed_apps_resets_the_detector():
+    """Hulu and Netflix are both armed, but they are not the same recording.
+
+    Levels, ad style and the learned baseline all belong to the service that
+    was on screen. Staying armed across the switch without resetting would let
+    one service's audio set the other's floor.
+    """
     config = make_config(
-        roku={"netflix_only": True},
+        roku={"armed_apps_only": True, "armed_app_ids": [NETFLIX, HULU]},
+        controller={"app_check_seconds": 0.0},
+    )
+    roku = FakeRoku(app=NETFLIX)
+    controller, detector, _ = build(
+        [(Event.NO_CHANGE, False)], config=config, roku=roku
+    )
+    controller.process_window(window(0))
+    assert detector.resets == 1  # armed for the first time
+
+    controller.process_window(window(1))
+    assert detector.resets == 1  # same app, nothing to reset
+
+    roku.app = HULU
+    controller.process_window(window(2))
+    assert detector.resets == 2  # switched services
+    assert controller._armed is True
+
+
+def test_leaving_an_armed_app_while_muted_unmutes():
+    config = make_config(
+        roku={"armed_apps_only": True},
         controller={"confirm_windows": 1, "app_check_seconds": 0.0},
     )
-    roku = FakeRoku(netflix=True)
+    roku = FakeRoku(app=NETFLIX)
     controller, _, _ = build([(Event.AD_STARTED, True)], config=config, roku=roku)
     controller.process_window(window(0))
     assert roku.is_muted is True
 
-    roku.netflix = False
+    roku.app = YOUTUBE
     controller.process_window(window(1))
     assert roku.is_muted is False
     assert controller.state is State.CONTENT
@@ -302,15 +338,15 @@ def test_leaving_netflix_while_muted_unmutes():
 
 def test_unreachable_tv_keeps_the_previous_arm_state():
     """A failed active-app query must not silently disarm detection."""
-    config = make_config(roku={"netflix_only": True}, controller={"app_check_seconds": 0.0})
-    roku = FakeRoku(netflix=True)
+    config = make_config(roku={"armed_apps_only": True}, controller={"app_check_seconds": 0.0})
+    roku = FakeRoku(app=NETFLIX)
     controller, detector, _ = build(
         [(Event.NO_CHANGE, False)], config=config, roku=roku
     )
     controller.process_window(window(0))
     assert detector.calls == 1
 
-    roku.netflix = None  # query fails
+    roku.app = None  # query fails
     controller.process_window(window(1))
     assert detector.calls == 2
 

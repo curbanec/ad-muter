@@ -11,6 +11,9 @@ annoying; muting real dialogue is worse.
 
 from __future__ import annotations
 
+import math
+import statistics
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol, runtime_checkable
@@ -126,6 +129,15 @@ class HeuristicDetector:
     ``ad_loudness_delta_db`` over the baseline, but staying in one only needs
     the lower ``ad_stay_loudness_delta_db``, so a quieter spot mid-break does
     not end the ad early. The crest test is the same in both states.
+
+    Loudness can be judged two ways. By default it is the delta over the
+    baseline described above. Setting ``ad_absolute_dbfs`` switches it to a
+    fixed dBFS bar over a median of the last ``loudness_median_windows``
+    windows; the hysteresis pair becomes ``ad_absolute_dbfs`` /
+    ``ad_stay_absolute_dbfs`` and everything else is unchanged. The delta
+    measure decays to nothing on long breaks -- the baseline is an EMA of
+    recent audio, so it climbs to meet the ad it is supposed to be contrasted
+    against -- while an absolute bar does not move.
     """
 
     def __init__(self, config: DetectionConfig, window_seconds: float = 1.0) -> None:
@@ -139,6 +151,7 @@ class HeuristicDetector:
         self._cue_gap = 0.0
         self._last_voiced: Features | None = None
         self._non_ad_streak = 0
+        self._loudness: deque[float] = deque(maxlen=config.loudness_median_windows)
 
     # ------------------------------------------------------------------ #
     # Detector protocol
@@ -150,6 +163,7 @@ class HeuristicDetector:
         self.reject()
         self._carry_silence = 0.0
         self._last_voiced = None
+        self._loudness.clear()
 
     def reject(self) -> None:
         """Clear ad state but keep the baseline we worked to learn."""
@@ -168,11 +182,25 @@ class HeuristicDetector:
         gap = self._track_silence(features)
         cue_gap = self._maybe_arm_cue(features, timestamp, gap)
 
-        # Hysteresis: the bar the loudness delta must clear depends on state.
-        loudness_threshold = (
-            cfg.ad_stay_loudness_delta_db if self._in_ad else cfg.ad_loudness_delta_db
+        self._loudness.append(features.rms_dbfs)
+        smoothed_rms = statistics.median(self._loudness)
+
+        # Hysteresis: the bar loudness must clear depends on state, and which
+        # quantity is being judged depends on the mode.
+        absolute = not math.isnan(cfg.ad_absolute_dbfs)
+        if absolute:
+            loudness_threshold = (
+                cfg.ad_stay_absolute_dbfs if self._in_ad else cfg.ad_absolute_dbfs
+            )
+        else:
+            loudness_threshold = (
+                cfg.ad_stay_loudness_delta_db
+                if self._in_ad
+                else cfg.ad_loudness_delta_db
+            )
+        profile, profile_metrics = self._ad_profile(
+            features, loudness_threshold, smoothed_rms
         )
-        profile, profile_metrics = self._ad_profile(features, loudness_threshold)
         cue_active = self._cue_active(timestamp)
 
         metrics: dict[str, float] = {
@@ -184,6 +212,7 @@ class HeuristicDetector:
             "cue_active": float(cue_active),
             "ad_loudness_delta_db": cfg.ad_loudness_delta_db,
             "ad_stay_loudness_delta_db": cfg.ad_stay_loudness_delta_db,
+            "absolute_mode": float(absolute),
             "loudness_threshold_db": loudness_threshold,
             **profile_metrics,
             **self.baseline.as_dict(),
@@ -262,26 +291,54 @@ class HeuristicDetector:
         return True
 
     def _ad_profile(
-        self, features: Features, loudness_threshold_db: float
+        self,
+        features: Features,
+        loudness_threshold_db: float,
+        smoothed_rms_dbfs: float,
     ) -> tuple[bool, dict[str, float]]:
-        """Does this window look like ad audio next to the content baseline?
+        """Does this window look like ad audio?
 
-        ``loudness_threshold_db`` is the bar the loudness delta must clear:
-        ``ad_loudness_delta_db`` to enter an ad, ``ad_stay_loudness_delta_db``
-        to remain in one. The crest test does not change between the two.
+        ``loudness_threshold_db`` is the bar loudness must clear, already
+        resolved by the caller for the current mode and ad state.
+
+        In absolute mode the loudness test needs no learned baseline, so the
+        profile can fire in the first seconds of a recording -- which is where a
+        break that starts at 00:00 lives, and the delta mode could never see it.
+        The crest test still wants a baseline; until there is one it is scored
+        as neutral rather than left to veto every window.
         """
         cfg = self.config
-        if features.is_silence or not self.baseline.ready(cfg.baseline_min_windows):
-            return False, {"loudness_delta_db": 0.0, "crest_delta_db": 0.0}
-
-        loudness_delta = features.rms_dbfs - float(self.baseline.rms_dbfs)
-        crest_delta = float(self.baseline.crest_db) - features.crest_db
-        louder = loudness_delta >= loudness_threshold_db
-        squashed = crest_delta >= cfg.ad_crest_delta_db
-        return louder and squashed, {
-            "loudness_delta_db": loudness_delta,
-            "crest_delta_db": crest_delta,
+        absolute = not math.isnan(cfg.ad_absolute_dbfs)
+        ready = self.baseline.ready(cfg.baseline_min_windows)
+        metrics = {
+            "loudness_delta_db": 0.0,
+            "crest_delta_db": 0.0,
+            "smoothed_rms_dbfs": smoothed_rms_dbfs,
         }
+        if features.is_silence or (not absolute and not ready):
+            return False, metrics
+
+        if ready:
+            metrics["loudness_delta_db"] = features.rms_dbfs - float(
+                self.baseline.rms_dbfs
+            )
+            metrics["crest_delta_db"] = float(self.baseline.crest_db) - features.crest_db
+
+        if absolute:
+            louder = smoothed_rms_dbfs >= loudness_threshold_db
+        else:
+            louder = metrics["loudness_delta_db"] >= loudness_threshold_db
+        squashed = metrics["crest_delta_db"] >= cfg.ad_crest_delta_db
+        return louder and squashed, metrics
+
+    def _loudness_reason(self, metrics: dict[str, float]) -> str:
+        """Phrase the loudness evidence in the units the decision was made in."""
+        if not math.isnan(self.config.ad_absolute_dbfs):
+            return (
+                f"loudness {metrics['smoothed_rms_dbfs']:.1f}dBFS "
+                f"(bar {metrics['loudness_threshold_db']:.1f})"
+            )
+        return f"loudness +{metrics['loudness_delta_db']:.1f}dB vs baseline"
 
     def _confidence(self, metrics: dict[str, float]) -> float:
         """Rough 0-1 score, for logging only — nothing decides on it.
@@ -292,8 +349,17 @@ class HeuristicDetector:
         was never judged by.
         """
         cfg = self.config
-        threshold = metrics.get("loudness_threshold_db", cfg.ad_loudness_delta_db)
-        loud = _clamp01(metrics.get("loudness_delta_db", 0.0) / max(threshold, 1e-6))
+        if not math.isnan(cfg.ad_absolute_dbfs):
+            # Absolute mode: dB past the bar, scaled over a 12 dB span. A ratio
+            # against the threshold itself would be nonsense -- it is negative.
+            threshold = metrics.get("loudness_threshold_db", cfg.ad_absolute_dbfs)
+            over = metrics.get("smoothed_rms_dbfs", threshold) - threshold
+            loud = _clamp01(over / 12.0)
+        else:
+            threshold = metrics.get("loudness_threshold_db", cfg.ad_loudness_delta_db)
+            loud = _clamp01(
+                metrics.get("loudness_delta_db", 0.0) / max(threshold, 1e-6)
+            )
         crest = _clamp01(
             metrics.get("crest_delta_db", 0.0) / max(cfg.ad_crest_delta_db, 1e-6)
         )
@@ -320,7 +386,7 @@ class HeuristicDetector:
                 confidence=self._confidence(metrics),
                 reason=(
                     f"gap={metrics['cue_gap_seconds']:.2f}s then "
-                    f"loudness +{metrics['loudness_delta_db']:.1f}dB / "
+                    f"{self._loudness_reason(metrics)} / "
                     f"crest -{metrics['crest_delta_db']:.1f}dB vs baseline"
                 ),
                 metrics=metrics,

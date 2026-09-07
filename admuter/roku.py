@@ -119,12 +119,17 @@ class RokuClient:
             return ActiveApp(app_id="", name="")
         return ActiveApp(app_id=app.get("id", "") or "", name=(app.text or "").strip())
 
-    def is_netflix_active(self) -> bool | None:
-        """True/False if we could ask the TV, None if the query failed."""
+    def is_armed_app_active(self) -> bool | None:
+        """True/False if we could ask the TV, None if the query failed.
+
+        The controller uses :meth:`active_app` directly instead, because it also
+        needs the app's identity: switching from one armed app to another is
+        still "armed", but the detector has to start over.
+        """
         app = self.active_app()
         if app is None:
             return None
-        return app.matches(self.config.netflix_app_ids, self.config.netflix_app_names)
+        return app.matches(self.config.armed_app_ids, self.config.armed_app_names)
 
     # ------------------------------------------------------------------ #
     # HTTP plumbing

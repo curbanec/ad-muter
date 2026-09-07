@@ -1,0 +1,63 @@
+# baseline score — captured 2026-09-07T05:03:17Z at git 95173de (absolute-loudness profile)
+# sessions: ad-muter-jungle-movie (netflix), new-girl-hulu, Schitts-Creek-hulu — all three annotated sessions
+# command: scripts/score_detector.py -i <each of the three dirs>
+
+14 chunks from 3 session(s)
+
+=== current config ===
+
+  [20260816-netflix-movie]
+  breaks caught: 3/3
+    16:51.8-19:29.5  muted at 17:00.0  (latency +8s)
+    30:13.2-31:48.6  muted at 30:22.0  (latency +9s)
+    59:46.8-62:10.2  muted at 60:02.0  (latency +15s)
+  ad audio muted:    348s of 397s (88%)
+  FALSE MUTE:        223s of content
+    spurious mute 02:44.0-03:09.0 (25s)
+    spurious mute 06:45.0-07:36.0 (51s)
+    spurious mute 15:29.0-15:45.0 (16s)
+    spurious mute 57:02.0-57:47.0 (45s)
+    spurious mute 67:44.0-67:51.0 (7s)
+    spurious mute 81:39.0-81:46.0 (7s)
+    spurious mute 114:25.0-114:40.0 (15s)
+
+  [20260903-hulu-newgirl]
+  breaks caught: 4/4
+    00:00.0-00:44.1  muted at 00:37.0  (latency +37s)
+    06:13.4-08:14.2  muted at 06:23.0  (latency +10s)
+    17:52.3-19:52.6  muted at 18:01.0  (latency +9s)
+    28:24.1-28:54.8  muted at 28:33.0  (latency +9s)
+  ad audio muted:    251s of 316s (79%)
+  FALSE MUTE:        312s of content
+    spurious mute 01:13.0-01:55.0 (42s)
+    spurious mute 02:46.0-03:04.0 (18s)
+    spurious mute 03:54.0-04:13.0 (19s)
+    spurious mute 05:09.0-05:48.0 (39s)
+    spurious mute 10:25.0-11:00.0 (35s)
+    spurious mute 11:59.0-12:22.0 (23s)
+    spurious mute 22:51.0-23:55.0 (64s)
+    spurious mute 26:58.0-27:51.0 (53s)
+
+  [20260903-hulu-schittscreek]
+  breaks caught: 4/4
+    00:00.0-00:38.6  muted at 00:12.0  (latency +12s)
+    07:13.2-09:14.3  muted at 07:15.0  (latency +2s)
+    14:24.1-16:24.9  muted at 14:31.0  (latency +7s)
+    26:07.4-26:10.5  muted at 25:27.0  (latency -40s)
+  ad audio muted:    262s of 284s (93%)
+  FALSE MUTE:        326s of content
+    spurious mute 01:15.0-01:41.0 (26s)
+    spurious mute 02:55.0-03:04.0 (9s)
+    spurious mute 03:10.0-03:20.0 (10s)
+    spurious mute 06:19.0-06:50.0 (31s)
+    spurious mute 11:58.0-13:28.0 (90s)
+    spurious mute 13:37.0-14:11.0 (34s)
+    spurious mute 21:55.0-22:18.0 (23s)
+    spurious mute 22:44.0-22:54.0 (10s)
+    spurious mute 24:45.0-25:04.0 (19s)
+
+  == TOTAL: 3 sessions, 170 min ==
+    breaks caught:     11/11
+    latency:           median +9s  worst +37s
+    ad audio muted:    862s of 996s (87%)
+    FALSE MUTE:        860s (304.0s per hour)
