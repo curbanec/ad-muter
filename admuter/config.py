@@ -144,6 +144,13 @@ class DetectionConfig:
     asr_decay_seconds: float = 30.0
     asr_min_phrases: int = 2
 
+    # Fingerprint voter. Empty path means no library and no matching at all.
+    # Unlike every other voter this one is an identity rather than an inference,
+    # so it is allowed to START a mute and to say how long it should last.
+    fingerprint_library_path: str = ""
+    fingerprint_enabled: bool = False
+    fingerprint_max_ber: float = 0.35
+
     # Ad lifetime
     ad_end_windows: int = 2
     min_ad_seconds: float = 5.0
@@ -216,6 +223,17 @@ class DetectionConfig:
             raise ConfigError("detection.asr_decay_seconds must be positive")
         if self.asr_min_phrases < 1:
             raise ConfigError("detection.asr_min_phrases must be >= 1")
+        if self.fingerprint_enabled and not self.fingerprint_library_path:
+            raise ConfigError(
+                "detection.fingerprint_enabled is true but "
+                "detection.fingerprint_library_path is empty; there is no "
+                "library to match against"
+            )
+        if not 0.0 < self.fingerprint_max_ber < 0.5:
+            raise ConfigError(
+                "detection.fingerprint_max_ber must be in (0, 0.5) — 0.5 is the "
+                "bit error rate of unrelated audio"
+            )
         if not 0 < self.baseline_alpha <= 1:
             raise ConfigError("detection.baseline_alpha must be in (0, 1]")
         if self.baseline_min_windows < 1:

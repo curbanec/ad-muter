@@ -175,6 +175,32 @@ detection:
   asr_decay_seconds: 30.0
   asr_min_phrases: 2
 
+  # --- Fingerprint voter: ON ---
+  # The only voter that recognises rather than infers, and the only one measured
+  # to work on the content the others fail. Walking the annotated spans in
+  # order, matching each against only what came before: 13 of 24 spans and
+  # 60.2% of all ad audio recognised from an earlier airing, with 0 of 20
+  # content samples falsely matched.
+  #
+  # Because a match is an identity it outranks everything else. It can START a
+  # mute on its own -- the ML voter is only a veto and the transcript voter only
+  # extends -- and it carries the spot's real duration, so the controller holds
+  # the mute for exactly the remaining seconds instead of counting quiet windows
+  # and hoping. That removes the whole overhang / unmuted-too-early class of
+  # error for any ad heard before.
+  #
+  # Cold start is per-ad and permanent: a spot's first airing is always missed.
+  # models/ads.json was seeded from the labelled spans with
+  #   python scripts/build_ad_library.py --loso ~/Movies -o models/ads.json
+  # and the live service logs further candidates as it hears repeats.
+  #
+  # fingerprint_max_ber is a bit error rate, not a probability. Unrelated audio
+  # sits at 0.50; identical audio at 0.00. 0.35 is Haitsma-Kalker's threshold
+  # and the observed matches land between 0.05 and 0.30.
+  fingerprint_library_path: "models/ads.json"
+  fingerprint_enabled: true
+  fingerprint_max_ber: 0.35
+
   # --- Content baseline (exponential moving average, one step per window) ---
   # Left at 0.05 deliberately. Offline, delta_rms AUC improves monotonically as
   # alpha drops (0.574 at 0.05 -> 0.673 at 0.005), but end-to-end it gets worse:

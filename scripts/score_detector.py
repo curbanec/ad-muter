@@ -45,6 +45,7 @@ from admuter.detector import HeuristicDetector  # noqa: E402
 from admuter.logging_setup import setup_logging  # noqa: E402
 from admuter.ml_detector import load_voter  # noqa: E402
 from admuter.transcript import load_transcript_voter  # noqa: E402
+from admuter.fingerprint import load_fingerprint_voter  # noqa: E402
 
 from build_dataset import (  # noqa: E402
     AD_LABELS,
@@ -163,6 +164,7 @@ def score(pairs, config: Config) -> dict:
         # Synchronous: replay outruns realtime, so a threaded recogniser would
         # drop nearly every window and score nothing at all.
         transcript_voter=load_transcript_voter(config.detection, synchronous=True),
+        fingerprint_voter=load_fingerprint_voter(config.detection),
     )
     controller = Controller(source, detector, roku, config)
     controller.run()

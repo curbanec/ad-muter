@@ -11,6 +11,7 @@ annoying; muting real dialogue is worse.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import statistics
 from collections import deque
@@ -43,6 +44,12 @@ class Decision:
     confidence: float
     reason: str
     metrics: dict[str, float] = field(default_factory=dict)
+    # Set only when a voter actually KNOWS when the ad ends -- today that means
+    # a fingerprint match, which carries the spot's real duration. Every other
+    # voter leaves this None and the controller falls back to counting quiet
+    # windows, which is a guess. A known end time is strictly better
+    # information, so the controller honours it over its own guess.
+    hold_until: float | None = None
 
     @property
     def is_change(self) -> bool:
@@ -146,6 +153,7 @@ class HeuristicDetector:
         window_seconds: float = 1.0,
         ml_voter: object | None = None,
         transcript_voter: object | None = None,
+        fingerprint_voter: object | None = None,
     ) -> None:
         self.config = config
         # Second and third opinions on the inner per-window question only. There
@@ -154,6 +162,9 @@ class HeuristicDetector:
         # Lags the audio by 10-20s, so it may only extend a mute, never start
         # one. Fed by the controller, which is the only place raw samples exist.
         self._transcript_voter = transcript_voter
+        # The only voter that recognises rather than guesses, so the only one
+        # permitted to start a mute by itself and to set its duration.
+        self._fingerprint_voter = fingerprint_voter
         self.window_seconds = window_seconds
         self.baseline = Baseline()
         self._in_ad = False
@@ -164,6 +175,7 @@ class HeuristicDetector:
         self._last_voiced: Features | None = None
         self._non_ad_streak = 0
         self._loudness: deque[float] = deque(maxlen=config.loudness_median_windows)
+        self._fp_hold_until: float | None = None
 
     # ------------------------------------------------------------------ #
     # Detector protocol
@@ -176,6 +188,11 @@ class HeuristicDetector:
         self._carry_silence = 0.0
         self._last_voiced = None
         self._loudness.clear()
+        self._fp_hold_until = None
+        if self._fingerprint_voter is not None:
+            # The audio is discontinuous after a restart, so the matcher's
+            # rolling buffer spans a gap that never happened.
+            self._fingerprint_voter.reset()
 
     def reject(self) -> None:
         """Clear ad state but keep the baseline we worked to learn."""
@@ -210,10 +227,17 @@ class HeuristicDetector:
                 if self._in_ad
                 else cfg.ad_loudness_delta_db
             )
+        self._fp_hold_until = None
         profile, profile_metrics = self._ad_profile(
             features, loudness_threshold, smoothed_rms, timestamp
         )
-        cue_active = self._cue_active(timestamp)
+        # A recognised spot is its own transition cue. The silent-seam test
+        # exists to stop the loudness heuristic firing on a loud scene; a
+        # fingerprint match has already identified the audio, so requiring a
+        # seam as well would throw away the one certain signal in the system.
+        cue_active = self._cue_active(timestamp) or bool(
+            profile_metrics.get("fingerprint_match", 0.0)
+        )
 
         metrics: dict[str, float] = {
             "rms_dbfs": features.rms_dbfs,
@@ -234,8 +258,14 @@ class HeuristicDetector:
             self._last_voiced = features
 
         if self._in_ad:
-            return self._update_in_ad(features, timestamp, profile, metrics)
-        return self._update_in_content(features, timestamp, profile, cue_active, metrics)
+            decision = self._update_in_ad(features, timestamp, profile, metrics)
+        else:
+            decision = self._update_in_content(
+                features, timestamp, profile, cue_active, metrics
+            )
+        if self._fp_hold_until is not None and self._fp_hold_until > timestamp:
+            decision = dataclasses.replace(decision, hold_until=self._fp_hold_until)
+        return decision
 
     # ------------------------------------------------------------------ #
     # Internals
@@ -369,6 +399,16 @@ class HeuristicDetector:
         what it logged before.
         """
         verdict = heuristic
+        if self._fingerprint_voter is not None:
+            fp_says, remaining = self._fingerprint_voter.says_ad(timestamp)
+            metrics["fingerprint_match"] = float(fp_says)
+            metrics["fingerprint_remaining_s"] = remaining
+            if self.config.fingerprint_enabled and fp_says:
+                # An identity, not an opinion. It overrides both the heuristic
+                # and the ML veto, in either direction of the hysteresis.
+                self._fp_hold_until = self._fingerprint_voter.hold_until
+                return True, metrics
+
         if self._transcript_voter is not None:
             asr_says, asr_score = self._transcript_voter.says_ad(timestamp)
             metrics["asr_score"] = asr_score

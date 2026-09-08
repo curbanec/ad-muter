@@ -76,6 +76,9 @@ class Controller:
         # Which armed app we last saw, so a switch between two of them is not
         # mistaken for "nothing changed".
         self._armed_app: str = ""
+        # Set from a Decision that knows when its ad ends. While it is in the
+        # future the ad-ended guess is not trusted to unmute early.
+        self._hold_until: float | None = None
         self._last_reason = ""
         self._windows_seen = 0
 
@@ -147,9 +150,10 @@ class Controller:
         # The transcript voter needs samples, and this is the only place they
         # exist: the detector only ever sees a Features summary. feed() is a
         # non-blocking hand-off that drops audio rather than stalling capture.
-        voter = getattr(self.detector, "_transcript_voter", None)
-        if voter is not None:
-            voter.feed(window.samples, window.sample_rate, window.timestamp)
+        for attr in ("_transcript_voter", "_fingerprint_voter"):
+            voter = getattr(self.detector, attr, None)
+            if voter is not None:
+                voter.feed(window.samples, window.sample_rate, window.timestamp)
 
         if window.stream_restarted and window.index > 0:
             log.info("capture restarted — resetting detector state")
@@ -176,6 +180,8 @@ class Controller:
     def _advance_content(self, decision: Decision, timestamp: float) -> None:
         if decision.event is not Event.AD_STARTED:
             return
+        if decision.hold_until is not None:
+            self._hold_until = decision.hold_until
         self.state = State.AD_SUSPECTED
         self._pending = 1
         self._suspect_reason = decision.reason
@@ -220,7 +226,19 @@ class Controller:
             if self.state is State.CONTENT:
                 return
 
+        if decision.hold_until is not None:
+            self._hold_until = max(self._hold_until or 0.0, decision.hold_until)
+
         if decision.event is Event.AD_ENDED:
+            # A recognised spot carries its real end time, which beats counting
+            # quiet windows. Quiet passages happen inside ads; the duration of a
+            # spot we have already heard is not a guess.
+            if self._hold_until is not None and timestamp < self._hold_until:
+                log.info(
+                    "holding mute %.0fs longer — recognised ad still running",
+                    self._hold_until - timestamp,
+                )
+                return
             self._unmute(decision.reason)
             return
 
@@ -261,6 +279,7 @@ class Controller:
         self._pending = 0
         self._suspect_reason = ""
         self._muted_at = None
+        self._hold_until = None
 
     def _reset_after_break(self, reason: str) -> None:
         """Recover from a discontinuity: unmute if needed, forget history."""

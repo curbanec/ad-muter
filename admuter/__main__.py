@@ -19,6 +19,7 @@ from .detector import HeuristicDetector
 from .logging_setup import build_feature_logger, setup_logging
 from .ml_detector import load_voter
 from .transcript import load_transcript_voter
+from .fingerprint import load_fingerprint_voter
 from .roku import RokuClient
 
 log = logging.getLogger("admuter")
@@ -96,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         config.audio.window_seconds,
         ml_voter=load_voter(config.detection),
         transcript_voter=load_transcript_voter(config.detection),
+        fingerprint_voter=load_fingerprint_voter(config.detection),
     )
     feature_logger = build_feature_logger(config.logging)
     if feature_logger is not None:
