@@ -31,6 +31,7 @@ from admuter.controller import Controller  # noqa: E402
 from admuter.detector import Decision, Event, HeuristicDetector  # noqa: E402
 from admuter.features import Features  # noqa: E402
 from admuter.logging_setup import FeatureLogger, setup_logging  # noqa: E402
+from admuter.ml_detector import load_voter  # noqa: E402
 
 DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "config.yaml"
 
@@ -132,7 +133,11 @@ def apply_overrides(config: Config, overrides: list[str]) -> Config:
 
 def replay(path: Path, config: Config, args: argparse.Namespace) -> int:
     detector = TapDetector(
-        HeuristicDetector(config.detection, config.audio.window_seconds)
+        HeuristicDetector(
+            config.detection,
+            config.audio.window_seconds,
+            ml_voter=load_voter(config.detection),
+        )
     )
     roku = StubRoku()
     feature_logger: FeatureLogger | None = None

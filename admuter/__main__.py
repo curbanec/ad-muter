@@ -17,6 +17,7 @@ from .config import Config, ConfigError
 from .controller import Controller
 from .detector import HeuristicDetector
 from .logging_setup import build_feature_logger, setup_logging
+from .ml_detector import load_voter
 from .roku import RokuClient
 
 log = logging.getLogger("admuter")
@@ -89,7 +90,11 @@ def main(argv: list[str] | None = None) -> int:
         log.warning("dry-run: mute/unmute commands will be logged, not sent")
 
     capture = AudioCapture(config.audio)
-    detector = HeuristicDetector(config.detection, config.audio.window_seconds)
+    detector = HeuristicDetector(
+        config.detection,
+        config.audio.window_seconds,
+        ml_voter=load_voter(config.detection),
+    )
     feature_logger = build_feature_logger(config.logging)
     if feature_logger is not None:
         log.info("feature log -> %s (%s)", feature_logger.path, feature_logger.format)

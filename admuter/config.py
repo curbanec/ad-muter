@@ -119,6 +119,21 @@ class DetectionConfig:
     baseline_alpha: float = 0.05
     baseline_min_windows: int = 15
 
+    # Phase 2 voter. Off in every sense by default: no path means the detector
+    # never even constructs one, and behaviour is bit-for-bit the heuristic.
+    #
+    # With a path but ml_vote_enabled false the model runs in SHADOW MODE -- its
+    # opinion is computed and logged on every window but cannot move the
+    # decision. That is the only honest way to find out what it would have done
+    # to a live stream, and it is where a new model should live until its
+    # disagreement rate has been looked at.
+    ml_model_path: str = ""
+    ml_vote_enabled: bool = False
+    # Deliberately high. The voter is a veto on entry (heuristic AND ml), so a
+    # low threshold here mostly costs missed breaks; it is the price of the
+    # model being wrong in the confident direction.
+    ml_threshold: float = 0.85
+
     # Ad lifetime
     ad_end_windows: int = 2
     min_ad_seconds: float = 5.0
@@ -173,6 +188,13 @@ class DetectionConfig:
             )
         if self.loudness_median_windows < 1:
             raise ConfigError("detection.loudness_median_windows must be >= 1")
+        if self.ml_vote_enabled and not self.ml_model_path:
+            raise ConfigError(
+                "detection.ml_vote_enabled is true but detection.ml_model_path "
+                "is empty; there is no model to vote with"
+            )
+        if not 0.0 < self.ml_threshold <= 1.0:
+            raise ConfigError("detection.ml_threshold must be in (0, 1]")
         if not 0 < self.baseline_alpha <= 1:
             raise ConfigError("detection.baseline_alpha must be in (0, 1]")
         if self.baseline_min_windows < 1:

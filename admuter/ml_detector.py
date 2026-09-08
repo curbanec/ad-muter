@@ -84,6 +84,44 @@ def build_row(
     return [FEATURE_BUILDERS[name](features, baseline) for name in columns]
 
 
+def load_voter(detection) -> "MLVoter | None":
+    """Build the voter a DetectionConfig asks for, or None. Never raises.
+
+    A model that will not load must not take the service down: the heuristic
+    alone is a working detector, and a stopped admuter cannot mute anything.
+    Every failure here is logged at error level and swallowed -- including
+    ImportError, since scikit-learn may simply not be installed on the box.
+
+    The one thing it will not do is quietly disagree with the config. If the
+    config says ml_vote_enabled and the model is unusable, that is said loudly,
+    because the operator asked for an ensemble and is getting a heuristic.
+    """
+    if not getattr(detection, "ml_model_path", ""):
+        return None
+    try:
+        voter = MLVoter.load(
+            detection.ml_model_path,
+            threshold=detection.ml_threshold,
+            baseline_min_windows=detection.baseline_min_windows,
+        )
+    except Exception as exc:  # noqa: BLE001 - nothing here may reach the caller
+        level = log.error if detection.ml_vote_enabled else log.warning
+        level(
+            "ML voter unavailable (%s); continuing with the heuristic alone%s",
+            exc,
+            " — detection.ml_vote_enabled is set but will have no effect"
+            if detection.ml_vote_enabled else "",
+        )
+        return None
+    log.info(
+        "ML voter loaded from %s (threshold %.2f, %s)",
+        detection.ml_model_path,
+        detection.ml_threshold,
+        "voting" if detection.ml_vote_enabled else "SHADOW MODE — logged, not counted",
+    )
+    return voter
+
+
 class MLVoter:
     """A loaded model plus the glue that keeps its inputs honest.
 

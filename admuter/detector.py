@@ -140,8 +140,16 @@ class HeuristicDetector:
     against -- while an absolute bar does not move.
     """
 
-    def __init__(self, config: DetectionConfig, window_seconds: float = 1.0) -> None:
+    def __init__(
+        self,
+        config: DetectionConfig,
+        window_seconds: float = 1.0,
+        ml_voter: object | None = None,
+    ) -> None:
         self.config = config
+        # A second opinion on the inner per-window question only. There is one
+        # state machine; the voter never sees or touches it.
+        self._ml_voter = ml_voter
         self.window_seconds = window_seconds
         self.baseline = Baseline()
         self._in_ad = False
@@ -316,7 +324,7 @@ class HeuristicDetector:
             "smoothed_rms_dbfs": smoothed_rms_dbfs,
         }
         if features.is_silence or (not absolute and not ready):
-            return False, metrics
+            return self._second_opinion(False, features, metrics)
 
         if ready:
             metrics["loudness_delta_db"] = features.rms_dbfs - float(
@@ -329,7 +337,43 @@ class HeuristicDetector:
         else:
             louder = metrics["loudness_delta_db"] >= loudness_threshold_db
         squashed = metrics["crest_delta_db"] >= cfg.ad_crest_delta_db
-        return louder and squashed, metrics
+        return self._second_opinion(louder and squashed, features, metrics)
+
+    def _second_opinion(
+        self, heuristic: bool, features: Features, metrics: dict[str, float]
+    ) -> tuple[bool, dict[str, float]]:
+        """Fold the model's per-window vote into the heuristic's, if there is one.
+
+        The combination mirrors the loudness hysteresis directly above it:
+
+            entering an ad   heuristic AND ml   -- both must agree to start
+            staying in an ad heuristic OR  ml   -- either can hold it open
+
+        That asymmetry is the point. Muting real dialogue is the failure that
+        ruins the experience, so starting a mute needs two votes; unmuting early in
+        the middle of a break is merely annoying, so one voter can keep it
+        alive. The same reasoning already sets ad_stay_loudness_delta_db below
+        ad_loudness_delta_db.
+
+        With no voter configured this returns the heuristic untouched and adds
+        no keys, so an install that has never heard of Phase 2 logs exactly
+        what it logged before.
+        """
+        if self._ml_voter is None:
+            return heuristic, metrics
+
+        ml_says, probability = self._ml_voter.says_ad(features, self.baseline)
+        metrics["heuristic_says_ad"] = float(heuristic)
+        metrics["ml_says_ad"] = float(ml_says)
+        metrics["ml_probability"] = probability
+        metrics["voters_disagree"] = float(ml_says != heuristic)
+
+        if not self.config.ml_vote_enabled:
+            # Shadow mode: recorded, never counted.
+            return heuristic, metrics
+        if self._in_ad:
+            return heuristic or ml_says, metrics
+        return heuristic and ml_says, metrics
 
     def _loudness_reason(self, metrics: dict[str, float]) -> str:
         """Phrase the loudness evidence in the units the decision was made in."""

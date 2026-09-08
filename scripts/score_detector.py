@@ -43,6 +43,7 @@ from admuter.config import Config, ConfigError  # noqa: E402
 from admuter.controller import Controller  # noqa: E402
 from admuter.detector import HeuristicDetector  # noqa: E402
 from admuter.logging_setup import setup_logging  # noqa: E402
+from admuter.ml_detector import load_voter  # noqa: E402
 
 from build_dataset import (  # noqa: E402
     AD_LABELS,
@@ -154,7 +155,11 @@ def overlap(a: Span, b: tuple[float, float]) -> float:
 def score(pairs, config: Config) -> dict:
     roku = RecordingRoku()
     source = SessionSource(pairs, config.audio.window_seconds, roku)
-    detector = HeuristicDetector(config.detection, config.audio.window_seconds)
+    detector = HeuristicDetector(
+        config.detection,
+        config.audio.window_seconds,
+        ml_voter=load_voter(config.detection),
+    )
     controller = Controller(source, detector, roku, config)
     controller.run()
 
