@@ -51,6 +51,87 @@ ASR_SAMPLE_RATE = 16000
 # a drama can say "side effects", but nothing except an ad says "restrictions
 # apply" or "well qualified buyers".
 AD_COPY_PHRASES: dict[str, float] = {
+    # Weights say how much a phrase means, not how common it is. Regulatory
+    # boilerplate and brand jingles score highest because they are close to
+    # exclusive to advertising: a drama can say "side effects", but nothing
+    # except an ad says "restrictions apply" or "liberty liberty".
+    #
+    # Entries marked [mined] came out of scripts/mine_lexicon.py over the five
+    # annotated sessions -- 4638 words of transcribed ad audio against 3923 of
+    # content -- and the counts after them are (ad occurrences / content
+    # occurrences). Guessed entries carry no counts. Re-run the miner as new
+    # recordings arrive; ad inventory rotates and this list should follow it.
+
+    # --- pharmaceutical: the largest single category in the sampled ads ---
+    # Much of this is legally required disclaimer language, which is why it is
+    # so reliable: the advertiser has no choice about saying it.
+    "tell your doctor": 2.5,             # [mined] 7/0
+    "ask your doctor": 2.5,              # [mined] 9/0
+    "your doctor about": 2.0,            # [mined] 5/0
+    "call your doctor": 2.0,
+    "talk to your doctor": 2.0,
+    "consult your doctor": 2.0,
+    "serious side effects": 2.5,         # [mined] 5/0
+    "side effects may include": 2.5,     # [mined] 3/0
+    "moderate to severe": 2.5,           # [mined] 6/0
+    "lower ability to fight": 3.0,       # [mined] 6/0 -- biologic boilerplate
+    "ability to fight infections": 3.0,  # [mined]
+    "get checked for infections": 3.0,   # [mined] 4/0
+    "serious allergic reactions": 2.5,   # [mined] 4/0
+    "allergic reaction": 1.5,
+    "liver problems": 2.0,               # [mined] 6/0
+    "the number one prescribed": 2.5,    # [mined] 3/0
+    "is proven to help": 2.0,            # [mined] 4/0
+    "clear skin": 2.0,                   # [mined] 6/0 -- psoriasis/eczema spots
+    "do not take": 1.5,
+    "if you are pregnant": 2.0,
+    "or plan to become": 2.0,            # [mined] "...or plan to become pregnant"
+    "prescription": 1.0,
+    "clinical studies": 1.5,
+    "may cause": 1.0,
+
+    # --- auto insurance: Liberty Mutual dominates this TV ---
+    # "liberty" alone appeared 42 times in ads and never in content, but the
+    # bare word is left out on purpose -- a show can say it. The doubled form
+    # is the jingle and occurs nowhere else. Nested repeats ("liberty liberty
+    # liberty") are not listed separately; the scorer keeps only the most
+    # specific match, so one entry covers every length of the chant.
+    "liberty liberty": 3.0,              # [mined] 23/0
+    "liberty mutual": 3.0,               # [mined]
+    "only pay for what you need": 3.0,   # [mined] 3/0 -- Liberty Mutual tagline
+    "car insurance with liberty": 3.0,   # [mined] 4/0
+    "savings on car insurance": 2.5,     # [mined] 3/0
+    "limu emu": 3.0,                     # ASR mangles this; kept for when it lands
+    "car insurance": 2.0,                # [mined] 7/0
+    "auto insurance": 2.0,
+    "home insurance": 2.0,
+    "life insurance": 2.0,
+    "great coverage": 2.0,               # [mined] 6/0
+    "coverage options": 1.5,
+    "free quote": 2.0,
+    "get a quote": 2.0,
+    "switch and save": 2.5,
+    "bundle and save": 2.5,
+    "your deductible": 1.5,
+    "licensed agent": 2.0,
+    "accident forgiveness": 2.5,
+    "roadside assistance": 2.0,
+    "comprehensive coverage": 2.0,
+    "safe driver discount": 2.5,
+    # Competitors, all of which share an ad pod with Liberty Mutual. Progressive,
+    # Allstate and Farmers all appear in the sampled ads.
+    "name your price": 2.5,              # Progressive
+    "like a good neighbor": 3.0,         # State Farm
+    "jake from state farm": 3.0,
+    "state farm": 2.0,
+    "youre in good hands": 3.0,          # Allstate (apostrophe stripped)
+    "we are farmers": 3.0,
+    "nationwide is on your side": 3.0,
+    "percent or more on car insurance": 3.0,   # GEICO
+    "progressive": 1.5,
+    "allstate": 2.0,
+    "geico": 2.5,
+
     # --- legal / regulatory boilerplate: near-exclusive to ads ---
     "restrictions apply": 2.0,
     "terms and conditions": 2.0,
@@ -58,54 +139,32 @@ AD_COPY_PHRASES: dict[str, float] = {
     "see dealer for details": 2.5,
     "well qualified buyers": 2.5,
     "results may vary": 2.0,
-    "individual results may vary": 2.5,
     "while supplies last": 2.0,
     "for a limited time": 1.5,
     "limited time offer": 2.0,
     "offer ends": 1.5,
     "no purchase necessary": 2.5,
     "void where prohibited": 2.5,
-    # --- pharmaceutical: much of this is legally mandated ---
-    "tell your doctor": 2.5,
-    "ask your doctor": 2.5,
-    "call your doctor": 2.0,
-    "talk to your doctor": 2.0,
-    "side effects": 1.5,
-    "serious side effects": 2.0,
-    "side effects may include": 2.5,
-    "do not take": 1.5,
-    "may cause": 1.0,
-    "allergic reaction": 1.5,
-    "prescription": 1.0,
-    "clinical studies": 1.5,
-    "consult your doctor": 2.0,
-    "if you are pregnant": 2.0,
-    # --- insurance ---
-    "free quote": 2.0,
-    "switch and save": 2.5,
-    "auto insurance": 2.0,
-    "home insurance": 2.0,
-    "life insurance": 2.0,
-    "licensed agent": 2.0,
-    "your deductible": 1.5,
-    "coverage options": 1.5,
-    # --- automotive / retail finance ---
+
+    # --- retail / tech / direct response ---
+    "the all new": 1.5,                  # [mined] 4/0 -- "the all new Samsung Galaxy"
+    "in app offer": 2.0,                 # [mined] 4/0
+    "call now": 2.0,
+    "order now": 2.0,
+    "shop now": 1.5,
+    "call the number on your screen": 2.5,
+    "visit us at": 1.5,
+    "dot com": 1.0,
+    "brought to you by": 1.5,
+    "available now at": 1.5,
+    "in stores now": 1.5,
+    "learn more at": 1.5,                # [mined]
     "zero percent": 1.5,
     "percent a p r": 2.0,
     "cash back": 1.5,
     "test drive": 1.5,
     "lease for": 2.0,
     "down payment": 1.5,
-    # --- direct response ---
-    "call now": 2.0,
-    "order now": 2.0,
-    "call the number on your screen": 2.5,
-    "visit us at": 1.5,
-    "dot com": 1.0,
-    "brought to you by": 1.5,
-    "ask about": 1.0,
-    "available now at": 1.5,
-    "in stores now": 1.5,
 }
 
 _WORD = re.compile(r"[a-z']+")
@@ -147,7 +206,32 @@ class LexiconScorer:
         flat = normalise(text)
         if not flat:
             return LexiconHit(0.0, ())
-        found = tuple(sorted(p for p in self._normalised if p and p in flat))
+        # Overlapping matches are ONE piece of evidence, not several. The
+        # lexicon deliberately contains related phrases ("side effects",
+        # "serious side effects", "side effects may include"; "talk to your
+        # doctor", "your doctor about"), and a single sentence fires many of
+        # them. Counting each would let one ordinary line of dialogue clear a
+        # threshold meant to need several independent signals.
+        #
+        # So matches are resolved by position: take the heaviest phrase first
+        # and discard anything covering text it already claimed.
+        hits = []
+        for phrase, weight in self._normalised.items():
+            if not phrase:
+                continue
+            start = flat.find(phrase)
+            while start != -1:
+                hits.append((weight, start, start + len(phrase), phrase))
+                start = flat.find(phrase, start + 1)
+        hits.sort(key=lambda h: (-h[0], h[1]))
+        claimed: list[tuple[int, int]] = []
+        kept: set[str] = set()
+        for weight, begin, stop, phrase in hits:
+            if any(begin < c_end and stop > c_begin for c_begin, c_end in claimed):
+                continue
+            claimed.append((begin, stop))
+            kept.add(phrase)
+        found = tuple(sorted(kept))
         if len(found) < self.min_phrases:
             return LexiconHit(0.0, found)
         return LexiconHit(sum(self._normalised[p] for p in found), found)

@@ -283,3 +283,56 @@ def test_synchronous_mode_recognises_inline_without_a_thread():
     assert voter._thread is None
     assert voter.says_ad(100.0)[0] is True
     assert voter.stats["asr_dropped_windows"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# Overlapping matches are one piece of evidence
+# --------------------------------------------------------------------------- #
+
+
+def test_overlapping_phrases_count_once():
+    """'talk to your doctor about' fires two lexicon entries over one span.
+
+    Ordinary dialogue really does say this. Counting both would let a single
+    line clear a threshold built to need several independent signals.
+    """
+    hit = LexiconScorer().score("we should probably talk to your doctor about that")
+    assert len(hit.phrases) == 1
+    assert hit.score == 0.0
+
+
+def test_nested_disclaimer_phrases_count_once():
+    hit = LexiconScorer(min_phrases=1).score("serious side effects may include nausea")
+    assert "side effects" not in hit.phrases  # swallowed by the longer match
+
+
+def test_the_liberty_chant_scores_once_however_long_it_runs():
+    short = LexiconScorer(min_phrases=1).score("liberty liberty")
+    long = LexiconScorer(min_phrases=1).score(
+        "liberty liberty liberty liberty liberty"
+    )
+    assert short.score == long.score
+
+
+def test_real_ad_copy_from_the_recordings_fires():
+    """Verbatim from the transcribed sessions."""
+    scorer = LexiconScorer()
+    for line in [
+        "it feels great getting great coverage and savings on car insurance "
+        "with liberty mutual",
+        "only pay for what you need liberty liberty liberty liberty",
+        "moderate to severe plaque psoriasis may lower ability to fight "
+        "infections tell your doctor",
+    ]:
+        assert scorer.score(line).score >= 3.0, line
+
+
+def test_real_dialogue_from_the_recordings_does_not_fire():
+    """Verbatim from the transcribed content spans."""
+    scorer = LexiconScorer()
+    for line in [
+        "your clothes i did out of my closet you've got t shirts on hangers",
+        "you up we'll take you out we'll get your rebound a rebound yeah",
+        "you this plane can't go down you think you being on this small plane",
+    ]:
+        assert scorer.score(line).score == 0.0, line
