@@ -14,6 +14,7 @@ service experiences it — and compares the resulting mute spans to the labels.
     python scripts/score_detector.py -i samples/movie --set detection.baseline_alpha=0.01
     python scripts/score_detector.py -i samples/movie --sweep detection.ad_crest_delta_db=-99,0,2
     python scripts/score_detector.py -i samples/movie -i samples/sitcom   # pooled
+    python scripts/score_detector.py --loso samples/                      # per session
 
 Three numbers decide whether it works:
 
@@ -26,9 +27,13 @@ Three numbers decide whether it works:
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import statistics
+import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -234,6 +239,173 @@ def report_totals(results: list[tuple[str, dict]]) -> None:
     print(f"    FALSE MUTE:        {false_muted:.0f}s ({per_hour:.1f}s per hour)")
 
 
+# --------------------------------------------------------------------------- #
+# Leave-one-session-out
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class SessionScore:
+    """One session's numbers, kept per-session on purpose.
+
+    Pooling hides the failure that matters. A config scoring well on four
+    sessions and badly on a fifth is worse than one scoring moderately on all
+    five, because the fifth is what a new service or genre looks like -- and
+    the pooled average is dominated by whichever session ran longest.
+    """
+
+    session_id: str
+    indir: str
+    chunks: int
+    breaks_caught: int
+    breaks_total: int
+    # Recall and precision are reported side by side and never combined. An F1
+    # would let a config trade away the one that ruins the experience (muting
+    # real dialogue) for the one that merely annoys (missing an ad).
+    recall_pct: float
+    precision_pct: float | None
+    ad_seconds: float
+    muted_seconds: float
+    false_muted_seconds: float
+    content_hours: float
+    false_mute_per_content_hour: float
+    duration_seconds: float
+
+
+def discover_sessions(parent: Path) -> list[Path]:
+    """Subdirectories of *parent* that hold audio. Anything else is not ours."""
+    if not parent.is_dir():
+        raise DatasetError(f"--loso: {parent} is not a directory")
+    found = [d for d in sorted(parent.iterdir()) if d.is_dir() and any(d.glob("*.wav"))]
+    if not found:
+        raise DatasetError(f"--loso: no subdirectory of {parent} contains a .wav")
+    return found
+
+
+def has_ad_spans(pairs) -> bool:
+    """Does this session label any ads at all?
+
+    An empty label file legitimately means "no ads in this chunk", so a whole
+    session of them is a session with nothing to score -- recall is undefined
+    and false mute has no breaks to be measured against. Skip it loudly rather
+    than reporting a meaningless 0/0.
+    """
+    return any(
+        span.label in AD_LABELS
+        for _, label_path in pairs
+        for span in parse_labels(label_path)
+    )
+
+
+def summarise(session_id: str, indir: Path, chunks: int, result: dict) -> SessionScore:
+    """Turn one score() result into the per-session row, changing nothing."""
+    ad = result["ad_seconds"]
+    muted = result["muted_seconds"]
+    duration = result["duration"]
+    breaks = result["breaks"]
+    # False mute is normalised against *content* time, not wall time: a session
+    # that is one-fifth ads has less content to be wrong about, and dividing by
+    # the whole duration would flatter it.
+    content_hours = max(duration - ad, 0.0) / 3600.0
+    return SessionScore(
+        session_id=session_id,
+        indir=str(indir),
+        chunks=chunks,
+        breaks_caught=sum(1 for _, start in breaks if start is not None),
+        breaks_total=len(breaks),
+        recall_pct=100.0 * result["covered"] / ad if ad else 0.0,
+        precision_pct=100.0 * result["covered"] / muted if muted else None,
+        ad_seconds=ad,
+        muted_seconds=muted,
+        false_muted_seconds=result["false_muted"],
+        content_hours=content_hours,
+        false_mute_per_content_hour=(
+            result["false_muted"] / content_hours if content_hours else 0.0
+        ),
+        duration_seconds=duration,
+    )
+
+
+def report_loso(rows: list[SessionScore]) -> None:
+    """One row per session, then the spread. The spread is the headline."""
+    print(f"\n  {'session':<30}{'breaks':>9}{'recall':>9}{'prec':>8}"
+          f"{'false mute':>13}{'per content hr':>16}")
+    print(f"  {'-' * 84}")
+    # Worst first: the session at the top is the one the config has to answer
+    # for, and reading order should not depend on how the directories sorted.
+    for r in sorted(rows, key=lambda r: r.false_mute_per_content_hour, reverse=True):
+        prec = f"{r.precision_pct:.0f}%" if r.precision_pct is not None else "n/a"
+        print(
+            f"  {r.session_id:<30}"
+            f"{f'{r.breaks_caught}/{r.breaks_total}':>9}"
+            f"{r.recall_pct:>8.0f}%"
+            f"{prec:>8}"
+            f"{r.false_muted_seconds:>12.0f}s"
+            f"{r.false_mute_per_content_hour:>15.0f}s"
+        )
+
+    per_hour = [r.false_mute_per_content_hour for r in rows]
+    worst = max(rows, key=lambda r: r.false_mute_per_content_hour)
+    best = min(rows, key=lambda r: r.false_mute_per_content_hour)
+    spread = worst.false_mute_per_content_hour - best.false_mute_per_content_hour
+    print(f"\n  TUNE AGAINST THIS -- worst session, not the average:")
+    print(f"    worst:  {worst.session_id} at "
+          f"{worst.false_mute_per_content_hour:.0f}s false mute per content hour")
+    print(f"    spread: {spread:.0f}s per content hour across {len(rows)} sessions "
+          f"(best {best.session_id} at {min(per_hour):.0f}s)")
+    caught = sum(r.breaks_caught for r in rows)
+    total = sum(r.breaks_total for r in rows)
+    worst_recall = min(rows, key=lambda r: r.recall_pct)
+    print(f"    breaks: {caught}/{total} overall, worst session "
+          f"{worst_recall.session_id} at {worst_recall.recall_pct:.0f}% recall")
+
+
+def _git_sha() -> str | None:
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=Path(__file__).resolve().parent.parent,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() or None if out.returncode == 0 else None
+
+
+def write_result_file(
+    rows: list[SessionScore], config_path: Path, label: str, outdir: Path
+) -> Path:
+    """Stamp the run so a number can be traced back to the code that made it."""
+    outdir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    path = outdir / f"{stamp}.json"
+    try:
+        config_sha = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    except OSError:
+        config_sha = None
+    per_hour = [r.false_mute_per_content_hour for r in rows]
+    payload = {
+        "timestamp": stamp,
+        "git_sha": _git_sha(),
+        "config_path": str(config_path),
+        "config_sha256": config_sha,
+        "config_label": label,
+        "session_ids": [r.session_id for r in rows],
+        "sessions": [asdict(r) for r in rows],
+        "worst_false_mute_per_content_hour": max(per_hour) if per_hour else None,
+        "spread_false_mute_per_content_hour": (
+            max(per_hour) - min(per_hour) if per_hour else None
+        ),
+    }
+    # A colliding timestamp means two runs in the same second; keep both.
+    suffix = 1
+    while path.exists():
+        path = outdir / f"{stamp}-{suffix}.json"
+        suffix += 1
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
 def apply_overrides(config: Config, overrides: list[str]) -> Config:
     import dataclasses
     sections = {n: dataclasses.asdict(getattr(config, n))
@@ -267,10 +439,23 @@ def main(argv: list[str] | None = None) -> int:
                         metavar="section.key=value")
     parser.add_argument("--sweep", metavar="section.key=v1,v2,v3",
                         help="score once per value of one setting")
+    parser.add_argument("--loso", type=Path, metavar="PARENT",
+                        help="leave-one-session-out: score every session "
+                             "subdirectory of PARENT on its own and report the "
+                             "spread. The number to tune against is the worst "
+                             "session, not the pooled average")
+    parser.add_argument("--results-dir", type=Path, default=Path("results"),
+                        metavar="DIR",
+                        help="where --loso writes its stamped JSON "
+                             "(default: results/)")
     parser.add_argument("--log-level", default="ERROR",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args(argv)
     setup_logging(args.log_level)
+
+    if args.loso is not None and args.indirs:
+        print("error: --loso and -i are mutually exclusive", file=sys.stderr)
+        return 2
 
     indirs = args.indirs or [Path(".")]
     try:
@@ -280,13 +465,32 @@ def main(argv: list[str] | None = None) -> int:
         base = apply_overrides(
             Config.load(args.config), args.overrides + ["roku.armed_apps_only=false"]
         )
-        # One entry per directory. Each is its own recording, so score() below
-        # gets a fresh detector and baseline for each; carrying state across
-        # unrelated sessions would let one night's audio set the other's floor.
-        sessions = [
-            (read_session(d).get("session_id") or d.resolve().name, pair_chunks(d))
-            for d in indirs
-        ]
+        if args.loso is not None:
+            loso: list[tuple[str, Path, list]] = []
+            for d in discover_sessions(args.loso):
+                try:
+                    pairs = pair_chunks(d)
+                except DatasetError as exc:
+                    print(f"warning: skipping {d.name} — {exc}", file=sys.stderr)
+                    continue
+                if not has_ad_spans(pairs):
+                    print(f"warning: skipping {d.name} — no labelled ad breaks",
+                          file=sys.stderr)
+                    continue
+                sid = read_session(d).get("session_id") or d.resolve().name
+                loso.append((sid, d, pairs))
+            if not loso:
+                raise DatasetError(f"no scorable session under {args.loso}")
+            sessions = [(sid, pairs) for sid, _, pairs in loso]
+        else:
+            # One entry per directory. Each is its own recording, so score()
+            # below gets a fresh detector and baseline for each; carrying state
+            # across unrelated sessions would let one night's audio set the
+            # other's floor.
+            sessions = [
+                (read_session(d).get("session_id") or d.resolve().name, pair_chunks(d))
+                for d in indirs
+            ]
     except (ConfigError, DatasetError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -294,7 +498,19 @@ def main(argv: list[str] | None = None) -> int:
     chunks = sum(len(pairs) for _, pairs in sessions)
     print(f"{chunks} chunks from {len(sessions)} session(s)")
 
-    def run(config: Config, label: str) -> None:
+    def run_loso(config: Config, label: str) -> None:
+        if label:
+            print(f"\n=== {label} ===")
+        rows: list[SessionScore] = []
+        for sid, d, pairs in loso:
+            print(f"\n  [{sid}]")
+            result = score(pairs, config)
+            report(result)
+            rows.append(summarise(sid, d, len(pairs), result))
+        report_loso(rows)
+        print(f"\n  wrote {write_result_file(rows, args.config, label, args.results_dir)}")
+
+    def run_pooled(config: Config, label: str) -> None:
         results = [(name, score(pairs, config)) for name, pairs in sessions]
         if len(results) == 1:
             report(results[0][1], label)
@@ -305,6 +521,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\n  [{name}]")
             report(result)
         report_totals(results)
+
+    run = run_loso if args.loso is not None else run_pooled
 
     if not args.sweep:
         run(base, "current config")
