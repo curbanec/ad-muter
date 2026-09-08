@@ -324,6 +324,114 @@ After editing `config.yaml`: `sudo systemctl restart admuter.service`.
 The service runs as `chris` with the `audio` supplementary group, restarts on
 failure after 5 s, and gets a SIGTERM on stop so it can unmute before exiting.
 
+i want t ## Running ad-muter
+
+Quick reference for starting the detector, recording samples, and getting the
+sound card back when something is holding it.
+
+The Cubilux is a **single-open device**. The systemd service, a manual
+`python -m admuter` run, and `arecord` all compete for it. Only one can have it
+at a time — the loser gets `Device or resource busy`.
+
+### Before you start anything
+
+```bash
+systemctl is-active admuter
+sudo fuser -v /dev/snd/pcmC2D0c
+```
+
+`inactive` and no output means the card is free.
+
+### Run the detector
+
+#### For a real evening of TV — use the service
+
+```bash
+sudo systemctl start admuter
+journalctl -u admuter -f          # follow logs; Ctrl-C only stops watching
+sudo systemctl stop admuter       # release the card
+```
+
+systemd owns the process, so it survives SSH disconnects, restarts on failure,
+and comes back after reboot if `enable`d.
+
+#### To watch it think — use tmux, never a bare foreground run
+
+```bash
+sudo systemctl stop admuter
+tmux new -s admuter
+cd ~/ad-muter
+.venv/bin/python -m admuter --log-level DEBUG
+```
+
+Ctrl-B then D to detach. `tmux attach -t admuter` to come back.
+
+**Do not Ctrl-Z a foreground run.** A stopped process keeps its file
+descriptors, so the sound card stays locked while the process does nothing.
+Ctrl-C to stop, or `fg` first if you already suspended it.
+
+### Record a labelling session
+
+```bash
+sudo systemctl stop admuter
+mkdir -p ~/ad-muter/samples/<session-name>
+cd ~/ad-muter/samples/<session-name>
+tmux new -s rec
+arecord -D plughw:CARD=Receiver,DEV=0 -f S16_LE -r 48000 -c 2 \
+  --max-file-time 1800 --use-strftime %Y%m%dT%H%M%S.wav
+```
+
+- Records **indefinitely** until Ctrl-C. Add `-d 10800` for a 3-hour cap.
+- ~11.5 MB/min, so ~345 MB per 30-min chunk. Check space with `df -h ~`.
+- Verify filenames expanded (`20260904T191203.wav`, not a literal `%Y...`)
+  within the first minute — otherwise `--use-strftime` didn't apply and you
+  get one enormous file.
+- One session per directory. The replay carries detector state across chunks,
+  so mixing two shows in one folder creates a discontinuity that never
+  happens live.
+- Drop a `session.json` in the directory with at least `{"session_id": "..."}`.
+
+TV volume does not affect capture — S/PDIF is a fixed-level digital
+passthrough. Confirm the TV's optical output is still **PCM-Stereo**, not
+Auto/Dolby, before a long recording. That fixed level is what
+`detection.ad_absolute_dbfs` depends on: change the adapter or the receiver and
+the threshold moves with it.
+
+### "Device or resource busy"
+
+Find the holder:
+
+```bash
+sudo fuser -v /dev/snd/pcmC2D0c
+ps aux | grep -E 'arecord|admuter' | grep -v grep
+```
+
+| Holder | Fix |
+|---|---|
+| `admuter.service` | `sudo systemctl stop admuter` |
+| Stray `arecord` | `pkill arecord` |
+| Suspended python (state `T` or `Tl` in `ps`) | see below |
+| Nothing listed, still busy | replug the USB adapter, or `sudo modprobe -r snd_usb_audio && sudo modprobe snd_usb_audio` |
+
+pipewire/wireplumber holding `controlC2` or `seq` is normal — they don't block
+PCM capture.
+
+#### Killing a suspended process
+
+A stopped process never handles SIGTERM, so plain `kill` appears to do nothing.
+Wake it first:
+
+```bash
+kill -CONT <pid>
+kill <pid>
+kill -9 <pid>        # if still holding
+```
+
+### Verifying a natural ad break
+
+Set `feature_log_enabled: true` in `config.yaml` before the session so every
+window lands in `logs/features.jsonl` for review afterward.
+
 ## Recording and replaying samples
 
 This is the loop you use to tune thresholds — and the samples double as the seed
