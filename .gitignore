@@ -222,6 +222,8 @@ samples/
 logs/
 # per-window CSVs; regenerate with scripts/build_dataset.py
 data/
+# stamped scoring runs; re-create with score_detector.py --loso
+results/
 
 # IDE and local tool state
 .idea/

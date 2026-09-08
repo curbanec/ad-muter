@@ -41,13 +41,32 @@ detection:
   # is unchanged. Omit it and it defaults to ad_loudness_delta_db - 2.0. Must be
   # <= ad_loudness_delta_db.
   ad_stay_loudness_delta_db: 0.0
-  # NOT a magnitude test any more. Crest barely separates ads from content here
-  # (AUC 0.501; median 14.14 dB ad vs 14.15 dB content), so the old 2.0 vetoed
-  # almost every real ad window and cost 2 of 3 breaks. At 0.0 this degrades to
-  # a sign test -- "no more dynamic than the baseline" -- which is still worth
-  # keeping: it is what ends mutes on time. Loosening it to -2.0 or disabling
-  # it (-99) pushed coverage to 87% but added 43s of false mute from overhang.
-  ad_crest_delta_db: -99.0
+  # Re-enabled. The old -99 (disabled) was fitted to the jungle movie, which is
+  # the one session where crest looks inert -- and it was judged on RAW crest_db
+  # (AUC 0.498 there) rather than on the delta this key actually thresholds.
+  # Measured on the delta across all five sessions the direction is consistent
+  # and useful: AUC 0.530 jungle, 0.550 new-girl, 0.741 schitts, 0.572
+  # modern-family, 0.622 kardashians.
+  #
+  # Swept -99 through 3.0 under scripts/sweep_loso.py, judged on the WORST
+  # session rather than the average. Minimising false mute alone is degenerate
+  # -- at 2.0 and above the detector catches 2 of 25 breaks and mutes almost
+  # nothing, which scores beautifully and does nothing. The rule used instead:
+  # keep worst-session recall above 50%, then take the lowest false mute.
+  #
+  #   value  worst false mute/content hr  breaks  worst recall
+  #   -99            2097s                24/25       57%
+  #    -3            1488s                23/25       47%
+  #    -1             835s                18/25       53%
+  #     0             537s                15/25       32%
+  #
+  # -1.0 is that pick. It cuts the worst session (kardashians) from muting 58%
+  # of its content to 23% while worst-case recall holds. The cost is real and
+  # is not hidden: 24/25 breaks becomes 18/25, and the movie drops from 88% to
+  # 54% recall. If missing whole breaks bothers you more than muted dialogue,
+  # -3.0 is the conservative pick -- recall stays near intact everywhere and it
+  # still cuts kardashians by 29%.
+  ad_crest_delta_db: -1.0
 
   # --- Ad profile, absolute ---
   # Set, so the loudness half of the profile is judged against a fixed dBFS bar
@@ -58,19 +77,51 @@ detection:
   # mute and "catches" with -150s latency (a spurious mute that happened to still
   # be open when the break arrived).
   #
-  # -23.0 was picked from the per-window features, not by sweeping: it is the
-  # best single split on each of the three annotated sessions taken separately
-  # (netflix movie -23.5, hulu new-girl -23.0, hulu schitts-creek -23.5). The
-  # sweep then agreed -- it is the only value that catches all 11 breaks.
-  # Tightening to -22.0 buys 82s/hr of false mute and costs a whole break.
-  ad_absolute_dbfs: -23.0
-  ad_stay_absolute_dbfs: -25.0    # hysteresis partner; omit to get this - 2.0
+  # Was -23.0, picked from the per-window features of the first three sessions
+  # (best split -23.5 / -23.0 / -23.5 independently). Retuned to -22.0 once
+  # ad_crest_delta_db was re-enabled: with crest rejecting dynamic content, the
+  # loudness bar no longer has to do that job alone and can afford to tighten.
+  # At -22.0 the worst session improves on BOTH axes against -23.0 -- 792s vs
+  # 835s false mute per content hour, and 21 of 25 breaks vs 18. Tighter fails:
+  # -21.5 drops worst-session recall to 39%, -21.0 to 23%.
+  #
+  # Still assumes a stable capture level. S/PDIF PCM out is a fixed digital
+  # level so TV volume does not move it, but a different adapter or receiver
+  # would -- and every number in this section would move with it.
+  ad_absolute_dbfs: -22.0
+  # Hysteresis partner, swept separately against the new enter bar. The 3 dB gap
+  # beat the 2 dB default: -24.0 drops worst-session recall to 35%, -26.0 raises
+  # false mute to 996s for no recall gain at all.
+  ad_stay_absolute_dbfs: -25.0
   # Median of the trailing N windows before the absolute test. Raw per-window
   # loudness puts 54% of content inside the ad range; at 9 windows that is 17%,
   # because ads come in contiguous blocks and content spikes do not. Swept
   # 3/5/9/15/21: 9 was the only setting holding 11/11 breaks at 89% coverage,
   # and past ~15 the median starts straddling break boundaries and decays again.
+  # Re-checked at 5/9/15 after crest was re-enabled. 15 now scores marginally
+  # lower false mute (680s vs 792s worst session) but catches one break fewer
+  # and pushes worst-case latency from +64s to +101s. That gap sits inside the
+  # noise this corpus supports -- 25 breaks, and recall is not monotonic in any
+  # of these knobs -- so 9 stays, on break count and latency rather than on the
+  # headline number.
   loudness_median_windows: 9
+
+  # --- Phase 2 voter: SHADOW MODE ---
+  # The model runs on every window and its opinion is written to
+  # logs/features.jsonl as ml_probability / ml_says_ad / heuristic_says_ad /
+  # voters_disagree. It CANNOT move the mute decision while ml_vote_enabled is
+  # false, and it should stay false: leave-one-session-out puts this model at
+  # 0.673 mean AUC and 0.451 on kardashians -- below chance on the genre that
+  # needs the most help -- and every voting threshold scored worse end to end
+  # than the heuristic alone. It is here to collect disagreement data against
+  # live audio, including services never annotated, at no risk to the decision.
+  #
+  # ml_threshold only bites once the vote is enabled. 0.85 is where this model
+  # emits almost nothing, so enabling the vote here catches 0 of 25 breaks: the
+  # AND-to-enter rule turns a silent model into a veto on everything.
+  ml_model_path: "models/admuter.joblib"
+  ml_vote_enabled: false
+  ml_threshold: 0.85
 
   # --- Content baseline (exponential moving average, one step per window) ---
   # Left at 0.05 deliberately. Offline, delta_rms AUC improves monotonically as
