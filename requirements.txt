@@ -2,3 +2,5 @@ numpy>=1.26
 requests>=2.31
 PyYAML>=6.0
 sounddevice>=0.4.6
+scikit-learn>=1.4
+joblib>=1.3
