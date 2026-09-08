@@ -145,11 +145,15 @@ class HeuristicDetector:
         config: DetectionConfig,
         window_seconds: float = 1.0,
         ml_voter: object | None = None,
+        transcript_voter: object | None = None,
     ) -> None:
         self.config = config
-        # A second opinion on the inner per-window question only. There is one
-        # state machine; the voter never sees or touches it.
+        # Second and third opinions on the inner per-window question only. There
+        # is one state machine; neither voter sees or touches it.
         self._ml_voter = ml_voter
+        # Lags the audio by 10-20s, so it may only extend a mute, never start
+        # one. Fed by the controller, which is the only place raw samples exist.
+        self._transcript_voter = transcript_voter
         self.window_seconds = window_seconds
         self.baseline = Baseline()
         self._in_ad = False
@@ -207,7 +211,7 @@ class HeuristicDetector:
                 else cfg.ad_loudness_delta_db
             )
         profile, profile_metrics = self._ad_profile(
-            features, loudness_threshold, smoothed_rms
+            features, loudness_threshold, smoothed_rms, timestamp
         )
         cue_active = self._cue_active(timestamp)
 
@@ -303,6 +307,7 @@ class HeuristicDetector:
         features: Features,
         loudness_threshold_db: float,
         smoothed_rms_dbfs: float,
+        timestamp: float = 0.0,
     ) -> tuple[bool, dict[str, float]]:
         """Does this window look like ad audio?
 
@@ -324,7 +329,7 @@ class HeuristicDetector:
             "smoothed_rms_dbfs": smoothed_rms_dbfs,
         }
         if features.is_silence or (not absolute and not ready):
-            return self._second_opinion(False, features, metrics)
+            return self._second_opinion(False, features, metrics, timestamp)
 
         if ready:
             metrics["loudness_delta_db"] = features.rms_dbfs - float(
@@ -337,10 +342,14 @@ class HeuristicDetector:
         else:
             louder = metrics["loudness_delta_db"] >= loudness_threshold_db
         squashed = metrics["crest_delta_db"] >= cfg.ad_crest_delta_db
-        return self._second_opinion(louder and squashed, features, metrics)
+        return self._second_opinion(louder and squashed, features, metrics, timestamp)
 
     def _second_opinion(
-        self, heuristic: bool, features: Features, metrics: dict[str, float]
+        self,
+        heuristic: bool,
+        features: Features,
+        metrics: dict[str, float],
+        timestamp: float = 0.0,
     ) -> tuple[bool, dict[str, float]]:
         """Fold the model's per-window vote into the heuristic's, if there is one.
 
@@ -359,8 +368,20 @@ class HeuristicDetector:
         no keys, so an install that has never heard of Phase 2 logs exactly
         what it logged before.
         """
+        verdict = heuristic
+        if self._transcript_voter is not None:
+            asr_says, asr_score = self._transcript_voter.says_ad(timestamp)
+            metrics["asr_score"] = asr_score
+            metrics["asr_says_ad"] = float(asr_says)
+            # STAY only. The transcript arrives long after the moment a mute
+            # had to start, so letting it enter would mute the show a
+            # quarter-minute after the break ended. Holding one open is the
+            # thing a slow, confident voter is actually good for.
+            if self.config.asr_vote_enabled and self._in_ad and asr_says:
+                verdict = True
+
         if self._ml_voter is None:
-            return heuristic, metrics
+            return verdict, metrics
 
         ml_says, probability = self._ml_voter.says_ad(features, self.baseline)
         metrics["heuristic_says_ad"] = float(heuristic)
@@ -370,10 +391,10 @@ class HeuristicDetector:
 
         if not self.config.ml_vote_enabled:
             # Shadow mode: recorded, never counted.
-            return heuristic, metrics
+            return verdict, metrics
         if self._in_ad:
-            return heuristic or ml_says, metrics
-        return heuristic and ml_says, metrics
+            return verdict or ml_says, metrics
+        return verdict and ml_says, metrics
 
     def _loudness_reason(self, metrics: dict[str, float]) -> str:
         """Phrase the loudness evidence in the units the decision was made in."""

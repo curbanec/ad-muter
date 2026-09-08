@@ -134,6 +134,16 @@ class DetectionConfig:
     # model being wrong in the confident direction.
     ml_threshold: float = 0.85
 
+    # Transcript voter. Empty path means no ASR thread is started at all.
+    # Recognition lags the audio by 10-20s, so this votes only on STAY, never
+    # on entry -- see admuter/transcript.py. asr_threshold is a summed phrase
+    # weight, not a probability.
+    asr_model_path: str = ""
+    asr_vote_enabled: bool = False
+    asr_threshold: float = 3.0
+    asr_decay_seconds: float = 30.0
+    asr_min_phrases: int = 2
+
     # Ad lifetime
     ad_end_windows: int = 2
     min_ad_seconds: float = 5.0
@@ -195,6 +205,17 @@ class DetectionConfig:
             )
         if not 0.0 < self.ml_threshold <= 1.0:
             raise ConfigError("detection.ml_threshold must be in (0, 1]")
+        if self.asr_vote_enabled and not self.asr_model_path:
+            raise ConfigError(
+                "detection.asr_vote_enabled is true but detection.asr_model_path "
+                "is empty; there is no recogniser to vote with"
+            )
+        if self.asr_threshold <= 0:
+            raise ConfigError("detection.asr_threshold must be positive")
+        if self.asr_decay_seconds <= 0:
+            raise ConfigError("detection.asr_decay_seconds must be positive")
+        if self.asr_min_phrases < 1:
+            raise ConfigError("detection.asr_min_phrases must be >= 1")
         if not 0 < self.baseline_alpha <= 1:
             raise ConfigError("detection.baseline_alpha must be in (0, 1]")
         if self.baseline_min_windows < 1:

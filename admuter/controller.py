@@ -121,6 +121,12 @@ class Controller:
                         "muted; press Mute on the remote"
                     )
         finally:
+            voter = getattr(self.detector, "_transcript_voter", None)
+            if voter is not None:
+                try:
+                    voter.stop()
+                except Exception:  # pragma: no cover - defensive
+                    log.debug("transcript voter stop() raised", exc_info=True)
             if self.feature_logger is not None:
                 self.feature_logger.close()
 
@@ -137,6 +143,13 @@ class Controller:
             silence_dbfs=self.config.detection.silence_dbfs,
             frame_seconds=self.config.audio.frame_seconds,
         )
+
+        # The transcript voter needs samples, and this is the only place they
+        # exist: the detector only ever sees a Features summary. feed() is a
+        # non-blocking hand-off that drops audio rather than stalling capture.
+        voter = getattr(self.detector, "_transcript_voter", None)
+        if voter is not None:
+            voter.feed(window.samples, window.sample_rate, window.timestamp)
 
         if window.stream_restarted and window.index > 0:
             log.info("capture restarted — resetting detector state")

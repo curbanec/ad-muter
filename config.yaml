@@ -123,6 +123,33 @@ detection:
   ml_vote_enabled: false
   ml_threshold: 0.85
 
+  # --- Transcript voter: OFF ---
+  # Ad copy is formulaic and some of it is legally mandated -- a pharma spot has
+  # to say "tell your doctor", an offer has to say "restrictions apply". Those
+  # phrases do not occur in scripted dialogue, and unlike every other signal
+  # here they do not stop working when the show is as loud as its ads. That is
+  # the whole point: it is the first feature in this system that is not loudness.
+  #
+  # It votes only on STAY, never on entry. Recognition lags the audio by 10-20s,
+  # so by the time the words are scored the moment to start a mute is long gone;
+  # entering on it would mute the show a quarter-minute after the break ended.
+  # Holding a mute open through the middle of a break is what it is good for.
+  #
+  # Needs vosk plus a model, neither of which is in requirements.txt:
+  #   pip install -r requirements-asr.txt
+  #   wget https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+  #   unzip vosk-model-small-en-us-0.15.zip -d models/
+  # then set the path below. Empty means no ASR thread is started at all.
+  #
+  # asr_threshold is a summed phrase weight, not a probability. asr_min_phrases
+  # is the guard against a medical drama saying "tell your doctor": one phrase
+  # is a coincidence and scores nothing, two or more is ad copy.
+  asr_model_path: ""
+  asr_vote_enabled: false
+  asr_threshold: 3.0
+  asr_decay_seconds: 30.0
+  asr_min_phrases: 2
+
   # --- Content baseline (exponential moving average, one step per window) ---
   # Left at 0.05 deliberately. Offline, delta_rms AUC improves monotonically as
   # alpha drops (0.574 at 0.05 -> 0.673 at 0.005), but end-to-end it gets worse:

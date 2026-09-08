@@ -44,6 +44,7 @@ from admuter.controller import Controller  # noqa: E402
 from admuter.detector import HeuristicDetector  # noqa: E402
 from admuter.logging_setup import setup_logging  # noqa: E402
 from admuter.ml_detector import load_voter  # noqa: E402
+from admuter.transcript import load_transcript_voter  # noqa: E402
 
 from build_dataset import (  # noqa: E402
     AD_LABELS,
@@ -159,6 +160,9 @@ def score(pairs, config: Config) -> dict:
         config.detection,
         config.audio.window_seconds,
         ml_voter=load_voter(config.detection),
+        # Synchronous: replay outruns realtime, so a threaded recogniser would
+        # drop nearly every window and score nothing at all.
+        transcript_voter=load_transcript_voter(config.detection, synchronous=True),
     )
     controller = Controller(source, detector, roku, config)
     controller.run()

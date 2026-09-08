@@ -1,0 +1,9 @@
+# Optional: the transcript voter (detection.asr_model_path).
+# Separate from requirements.txt because vosk publishes no macOS wheel — this
+# installs on the Pi (manylinux2014_aarch64) and on x86 Linux, not on a Mac.
+#
+#   pip install -r requirements-asr.txt
+#   # then a model, e.g. the 40MB small English one:
+#   wget https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+#   unzip vosk-model-small-en-us-0.15.zip -d models/
+vosk>=0.3.45
