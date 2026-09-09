@@ -224,6 +224,10 @@ logs/
 data/
 # stamped scoring runs; re-create with score_detector.py --loso
 results/
+# downloadable third-party ASR models (~70MB); see requirements-asr.txt.
+# models/admuter.joblib and models/ads.json ARE tracked -- they are small
+# and cannot be regenerated on the Pi.
+models/vosk*/
 
 # IDE and local tool state
 .idea/

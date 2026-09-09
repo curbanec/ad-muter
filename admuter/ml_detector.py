@@ -160,7 +160,9 @@ class MLVoter:
         import joblib  # local: the live service should not pay for this import
                        # unless a model is actually configured.
 
-        path = Path(path)
+        from .config import resolve_path
+
+        path = resolve_path(path)
         if not path.exists():
             raise MLDetectorError(f"no model at {path}")
         try:

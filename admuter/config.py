@@ -18,6 +18,25 @@ import yaml
 T = TypeVar("T")
 
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def resolve_path(value: str | Path) -> Path:
+    """Resolve a config path, falling back to the repo root for relative ones.
+
+    Model paths in config.yaml are relative, which silently means "relative to
+    wherever the process happened to start". Under systemd that is
+    WorkingDirectory and it works; from a manual run in another directory the
+    file is simply not found, and the service degrades to a warning that looks
+    like a missing model rather than a wrong cwd. Absolute paths are untouched.
+    """
+    path = Path(value)
+    if path.is_absolute() or path.exists():
+        return path
+    candidate = REPO_ROOT / path
+    return candidate if candidate.exists() else path
+
+
 class ConfigError(ValueError):
     """Raised when the config file is malformed, misspelled, or out of range."""
 

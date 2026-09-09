@@ -35,6 +35,8 @@ from typing import Protocol
 
 import numpy as np
 
+from .config import resolve_path
+
 log = logging.getLogger(__name__)
 
 # Vosk wants 16 kHz mono; the capture chain is 48 kHz stereo. 48/16 is exactly
@@ -464,7 +466,7 @@ def load_transcript_voter(
     if not path:
         return None
     try:
-        recognizer = VoskRecognizer(path)
+        recognizer = VoskRecognizer(str(resolve_path(path)))
     except Exception as exc:  # noqa: BLE001 - includes ImportError and OSError
         level = log.error if detection.asr_vote_enabled else log.warning
         level(

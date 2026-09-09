@@ -47,6 +47,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .config import resolve_path
+
 log = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
@@ -424,7 +426,7 @@ def load_fingerprint_voter(detection) -> "FingerprintVoter | None":
     if not path:
         return None
     try:
-        index = FingerprintIndex.load(Path(path))
+        index = FingerprintIndex.load(resolve_path(path))
     except Exception as exc:  # noqa: BLE001 - never take the service down
         level = log.error if detection.fingerprint_enabled else log.warning
         level("ad library unavailable (%s); continuing without it", exc)
