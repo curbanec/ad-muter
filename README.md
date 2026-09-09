@@ -4,6 +4,9 @@ Listens to the TV's optical output, notices when a streaming app cuts to an ad,
 and mutes the TV over Roku ECP until the show comes back. Scored on Netflix and
 Hulu; armed by default on the ad-supported apps listed in `roku.armed_app_ids`.
 
+See [ARCHITECTURE.md](ARCHITECTURE.md) for how the four voters and the state
+machine fit together, with diagrams.
+
 These services stitch their ads server-side: the Roku reports the same playback
 state during an ad as during the show, so `query/media-player` is useless here. The
 audio, however, gives it away — there is a short near-silent seam at the join,
