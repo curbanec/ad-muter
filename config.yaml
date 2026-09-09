@@ -147,6 +147,7 @@ detection:
   #   pip install -r requirements-asr.txt
   #   wget https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
   #   unzip vosk-model-small-en-us-0.15.zip -d models/
+  #   mv models/vosk-model-small-en-us-0.15 models/vosk-small-en-us
   # then set the path below. Empty means no ASR thread is started at all.
   #
   # asr_threshold is a summed phrase weight, not a probability. asr_min_phrases
@@ -164,12 +165,16 @@ detection:
   #   pip install -r requirements-asr.txt
   #   wget https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
   #   unzip vosk-model-small-en-us-0.15.zip -d models/
+  #   mv models/vosk-model-small-en-us-0.15 models/vosk-small-en-us
   #
   # Caveat worth knowing: that 100% precision was measured on faster-whisper
   # base.en transcripts. Vosk small is a weaker recogniser and ad audio is
   # heavily compressed, so real hit rates will be lower. Watch the log for
   # "ad copy at ..." lines during a break before trusting it.
-  asr_model_path: "models/vosk-model-small-en-us-0.15"
+  # The folder name must match exactly. Vosk reports a wrong path as "does
+  # not contain model files", which reads like a broken download rather than
+  # a name mismatch, and sends you to re-check the zip.
+  asr_model_path: "models/vosk-small-en-us"
   asr_vote_enabled: true
   asr_threshold: 3.0
   asr_decay_seconds: 30.0

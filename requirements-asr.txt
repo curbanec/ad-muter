@@ -6,4 +6,5 @@
 #   # then a model, e.g. the 40MB small English one:
 #   wget https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
 #   unzip vosk-model-small-en-us-0.15.zip -d models/
+#   mv models/vosk-model-small-en-us-0.15 models/vosk-small-en-us
 vosk>=0.3.45
