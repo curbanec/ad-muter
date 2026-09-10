@@ -194,12 +194,21 @@ class HeuristicDetector:
             # rolling buffer spans a gap that never happened.
             self._fingerprint_voter.reset()
 
-    def reject(self) -> None:
-        """Clear ad state but keep the baseline we worked to learn."""
+    def reject(self, keep_cue: bool = False) -> None:
+        """Clear ad state but keep the baseline we worked to learn.
+
+        ``keep_cue`` preserves the armed transition cue. A failed confirmation
+        means the ad *profile* was not sustained, not that the seam never
+        happened -- and clearing the cue there is fatal: a new one needs a new
+        silent seam, which does not come in the middle of a break. One failed
+        confirmation would otherwise make the whole break unreachable, every
+        subsequent window logging "ad profile without a transition cue".
+        """
         self._in_ad = False
         self._ad_started_at = None
-        self._cue_at = None
-        self._cue_gap = 0.0
+        if not keep_cue:
+            self._cue_at = None
+            self._cue_gap = 0.0
         self._non_ad_streak = 0
 
     @property

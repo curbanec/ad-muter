@@ -128,6 +128,7 @@ class Controller:
         self.state = State.CONTENT
         self._stop = False
         self._pending = 0
+        self._suspect_windows = 0
         self._suspect_reason = ""
         self._muted_at: float | None = None
         self._we_muted = False
@@ -256,6 +257,7 @@ class Controller:
             self._hold_until = decision.hold_until
         self.state = State.AD_SUSPECTED
         self._pending = 1
+        self._suspect_windows = 1
         self._suspect_reason = decision.reason
         log.info(
             "AD_SUSPECTED (1/%d) conf=%.2f — %s",
@@ -268,28 +270,42 @@ class Controller:
 
     def _advance_suspected(self, decision: Decision, timestamp: float) -> None:
         confirm = self.config.controller.confirm_windows
+        # Confirmation counts ad-like windows within a window of opportunity
+        # rather than demanding them back to back. The profile flickers
+        # second to second at the edge of a break -- true, true, false, true --
+        # and a strictly consecutive run gives up on breaks that are plainly
+        # there. Twice the required count is the budget.
+        budget = confirm * 2
         if decision.event is Event.AD_ENDED:
             log.info("ad ended before confirmation — %s", decision.reason)
             self._to_content()
             return
-        if not decision.ad_profile:
-            # Prefer a missed ad over muting real content.
-            log.info(
-                "confirmation failed at %d/%d windows — staying unmuted (%s)",
-                self._pending,
-                confirm,
-                decision.reason,
-            )
-            self._to_content()
-            self.detector.reject()
-            return
 
-        self._pending += 1
+        self._suspect_windows += 1
+        if decision.ad_profile:
+            self._pending += 1
+
         if self._pending >= confirm:
             self._mute(self._suspect_reason or decision.reason, timestamp)
-        else:
+            return
+
+        if self._suspect_windows >= budget:
+            # Prefer a missed ad over muting real content.
             log.info(
-                "AD_SUSPECTED (%d/%d) conf=%.2f", self._pending, confirm, decision.confidence
+                "confirmation failed at %d/%d ad-like windows in %d — staying "
+                "unmuted (%s)",
+                self._pending, confirm, self._suspect_windows, decision.reason,
+            )
+            self._to_content()
+            # Keep the cue: the seam did happen, and without it every later
+            # window of this break is unreachable.
+            self.detector.reject(keep_cue=True)
+            return
+
+        if decision.ad_profile:
+            log.info(
+                "AD_SUSPECTED (%d/%d in %d) conf=%.2f",
+                self._pending, confirm, self._suspect_windows, decision.confidence,
             )
 
     def _advance_muted(self, decision: Decision, timestamp: float) -> None:
@@ -349,6 +365,7 @@ class Controller:
     def _to_content(self) -> None:
         self.state = State.CONTENT
         self._pending = 0
+        self._suspect_windows = 0
         self._suspect_reason = ""
         self._muted_at = None
         self._hold_until = None

@@ -47,8 +47,9 @@ class ScriptedDetector:
     def reset(self) -> None:
         self.resets += 1
 
-    def reject(self) -> None:
+    def reject(self, keep_cue: bool = False) -> None:
         self.rejects += 1
+        self.kept_cue = keep_cue
 
 
 class FakeRoku:
@@ -525,3 +526,48 @@ def test_an_unanswered_poller_holds_the_previous_arm_state():
     controller._app_poller = AppGatePoller(roku, interval_seconds=1.0)  # never started
     controller.process_window(window(0))
     assert controller._armed is True
+
+
+def test_confirmation_survives_a_flickering_profile():
+    """The real failure from the Pi: 3 of 5, one miss, whole break abandoned.
+
+    At the edge of a break the profile alternates second to second. Demanding
+    a strictly consecutive run gives up on breaks that are plainly there.
+    """
+    config = make_config(controller={"confirm_windows": 5})
+    # true, true, true, FALSE, true, true — five ad-like windows inside six.
+    script = [
+        (Event.AD_STARTED, True), (Event.NO_CHANGE, True), (Event.NO_CHANGE, True),
+        (Event.NO_CHANGE, False), (Event.NO_CHANGE, True), (Event.NO_CHANGE, True),
+    ]
+    controller, _, roku = build(script, config=config)
+    for i in range(len(script)):
+        controller.process_window(window(i))
+    assert roku.is_muted, "a single flickered window should not abandon the break"
+
+
+def test_a_genuinely_absent_profile_still_gives_up():
+    """Tolerance must not become 'mute on one stray window'."""
+    config = make_config(controller={"confirm_windows": 5})
+    script = [(Event.AD_STARTED, True)] + [(Event.NO_CHANGE, False)] * 12
+    controller, _, roku = build(script, config=config)
+    for i in range(len(script)):
+        controller.process_window(window(i))
+    assert not roku.is_muted
+    assert controller.state is State.CONTENT
+
+
+def test_failed_confirmation_keeps_the_transition_cue():
+    """Clearing it made every later window of the break unreachable.
+
+    A failed confirmation means the profile was not sustained, not that the
+    seam never happened — and a new cue needs a new silent seam, which does
+    not arrive in the middle of an ad break.
+    """
+    config = make_config(controller={"confirm_windows": 5})
+    script = [(Event.AD_STARTED, True)] + [(Event.NO_CHANGE, False)] * 12
+    controller, detector, _ = build(script, config=config)
+    for i in range(len(script)):
+        controller.process_window(window(i))
+    assert detector.rejects >= 1
+    assert detector.kept_cue is True
