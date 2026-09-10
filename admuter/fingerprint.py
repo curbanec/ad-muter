@@ -191,6 +191,21 @@ class FingerprintIndex:
     def __len__(self) -> int:
         return len(self.ads)
 
+    def remove(self, ad_id: str) -> None:
+        """Drop an ad and its postings. Needed by anything that prunes."""
+        ad = self.ads.pop(ad_id, None)
+        if ad is None:
+            return
+        for value in set(ad.hashes):
+            postings = self._postings.get(value)
+            if not postings:
+                continue
+            kept = [(a, f) for a, f in postings if a != ad_id]
+            if kept:
+                self._postings[value] = kept
+            else:
+                del self._postings[value]
+
     def add(self, ad: Ad) -> None:
         self.ads[ad.ad_id] = ad
         for frame, value in enumerate(ad.hashes):
@@ -306,31 +321,48 @@ class RepeatDetector:
         self,
         min_separation_seconds: float = 90.0,
         history_seconds: float = 3 * 3600.0,
+        sample_seconds: float = 5.0,
     ) -> None:
         self.min_separation = min_separation_seconds
         self.history_seconds = history_seconds
-        self._history: list[tuple[float, list[int]]] = []
+        self.sample_seconds = sample_seconds
+        self._recent_ids: list[tuple[float, str]] = []
         self._index = FingerprintIndex()
         self._counter = 0
+        self._last_observed = float("-inf")
 
     def observe(self, hashes: list[int], timestamp: float) -> str | None:
-        """Record a block; return a new ad id if this block is a repeat."""
+        """Record a block; return the id of what it repeats, or None.
+
+        Blocks are sampled rather than taken every window. Consecutive windows
+        overlap almost entirely, so storing all of them costs a block a second
+        for no extra coverage -- and this runs on the capture thread.
+        """
         if len(hashes) < QUERY_FRAMES:
             return None
+        if timestamp - self._last_observed < self.sample_seconds:
+            return None
+        self._last_observed = timestamp
+
         match = self._index.query(hashes)
-        self._history.append((timestamp, list(hashes)))
-        cutoff = timestamp - self.history_seconds
-        while self._history and self._history[0][0] < cutoff:
-            self._history.pop(0)
 
         block_id = f"blk{self._counter:06d}"
         self._counter += 1
         self._index.add(Ad(ad_id=block_id, hashes=list(hashes), first_seen=timestamp))
+        self._recent_ids.append((timestamp, block_id))
+
+        # Prune to the retention window. Without this the index grows for as
+        # long as the service runs -- an evening of television is thousands of
+        # blocks and hundreds of thousands of postings, none of it ever freed.
+        cutoff = timestamp - self.history_seconds
+        while self._recent_ids and self._recent_ids[0][0] < cutoff:
+            _, stale = self._recent_ids.pop(0)
+            self._index.remove(stale)
 
         if match is None:
             return None
-        earlier = self._index.ads[match.ad_id].first_seen
-        if timestamp - earlier < self.min_separation:
+        earlier = self._index.ads.get(match.ad_id)
+        if earlier is None or timestamp - earlier.first_seen < self.min_separation:
             # Overlapping windows of the same airing, not a second airing.
             return None
         return match.ad_id

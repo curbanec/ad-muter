@@ -334,3 +334,26 @@ def test_no_library_path_means_no_voter():
     from admuter.fingerprint import load_fingerprint_voter
 
     assert load_fingerprint_voter(DetectionConfig()) is None
+
+
+def test_the_repeat_detector_does_not_grow_without_bound():
+    """It runs on the capture thread for hours; unpruned it leaks all evening."""
+    from admuter.fingerprint import RepeatDetector
+
+    rng = np.random.default_rng(3)
+    detector = RepeatDetector(history_seconds=600.0, sample_seconds=5.0)
+    for second in range(7200):  # two hours of windows
+        block = [int(x) for x in rng.integers(1, 2 ** 32, QUERY_FRAMES)]
+        detector.observe(block, float(second))
+    assert len(detector._index) < 200, "retention window is not being applied"
+
+
+def test_removing_an_ad_removes_its_postings():
+    index = FingerprintIndex()
+    index.add(Ad(ad_id="gone", hashes=hashes_of(noise(seed=7))))
+    index.add(Ad(ad_id="stays", hashes=hashes_of(noise(seed=8))))
+    index.remove("gone")
+    assert "gone" not in index.ads
+    assert all(ad != "gone" for postings in index._postings.values()
+               for ad, _ in postings)
+    assert index.query(hashes_of(noise(seed=8))[:QUERY_FRAMES]) is not None

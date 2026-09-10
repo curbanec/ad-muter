@@ -24,6 +24,8 @@ from enum import Enum
 from typing import Iterable, Protocol
 
 from .capture import AudioWindow
+import threading
+
 from .config import Config
 from .detector import Decision, Detector, Event
 from .features import Features, compute_features
@@ -31,6 +33,65 @@ from .logging_setup import FeatureLogger
 from .roku import RokuClient
 
 log = logging.getLogger(__name__)
+
+
+class AppGatePoller:
+    """Asks the Roku what is on screen, off the capture thread.
+
+    This used to happen inline in process_window, which put a synchronous HTTP
+    GET with a 2 s timeout between two stream.read() calls. Every
+    app_check_seconds the capture loop stalled for a network round trip and ALSA
+    overflowed its buffer -- "audio input overflow — dropped samples", arriving
+    on exactly the app-check period.
+
+    The gate does not need to be current to the millisecond: it answers "is a
+    streaming app on screen", which changes a few times an evening. A cached
+    answer from a few seconds ago is worth far more than a fresh one that costs
+    dropped audio.
+    """
+
+    def __init__(self, roku, interval_seconds: float) -> None:
+        self.roku = roku
+        self.interval = max(1.0, float(interval_seconds))
+        self._lock = threading.Lock()
+        self._app = None
+        self._answered = False
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._run, name="admuter-appgate", daemon=True
+        )
+        self._thread.start()
+
+    def stop(self, timeout: float = 3.0) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+            self._thread = None
+
+    @property
+    def current(self):
+        """(app, answered). answered is False until the first reply lands."""
+        with self._lock:
+            return self._app, self._answered
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                app = self.roku.active_app()
+            except Exception:  # noqa: BLE001 - a flaky TV must not stop capture
+                log.debug("active-app query raised", exc_info=True)
+                app = None
+            if app is not None:
+                with self._lock:
+                    self._app = app
+                    self._answered = True
+            self._stop.wait(self.interval)
 
 
 class State(str, Enum):
@@ -79,6 +140,9 @@ class Controller:
         # Set from a Decision that knows when its ad ends. While it is in the
         # future the ad-ended guess is not trusted to unmute early.
         self._hold_until: float | None = None
+        # Started in run(); absent when process_window is driven directly (tests
+        # and offline replay), where an inline query costs nothing.
+        self._app_poller: AppGatePoller | None = None
         self._last_reason = ""
         self._windows_seen = 0
 
@@ -94,6 +158,11 @@ class Controller:
             self.config.roku.armed_apps_only,
             ", ".join(self.config.roku.armed_app_names) or "by id only",
         )
+        if self.config.roku.armed_apps_only:
+            self._app_poller = AppGatePoller(
+                self.roku, self.config.controller.app_check_seconds
+            )
+            self._app_poller.start()
         try:
             for window in self.capture.windows():
                 if self._stop:
@@ -124,6 +193,9 @@ class Controller:
                         "muted; press Mute on the remote"
                     )
         finally:
+            if self._app_poller is not None:
+                self._app_poller.stop()
+                self._app_poller = None
             voter = getattr(self.detector, "_transcript_voter", None)
             if voter is not None:
                 try:
@@ -304,7 +376,14 @@ class Controller:
         )
         if due:
             self._armed_checked_at = timestamp
-            app = self.roku.active_app()
+            if self._app_poller is not None:
+                app, answered = self._app_poller.current
+                if not answered:
+                    # No reply yet. Hold the current state rather than
+                    # disarming on a TV that simply has not been reached.
+                    return self._armed
+            else:
+                app = self.roku.active_app()
             if app is None:
                 # "We could not ask" is not "nothing is playing". Hold the last
                 # known state rather than disarming mid-ad on a dropped packet.

@@ -487,3 +487,41 @@ def test_config_defaults_round_trip_through_dataclasses():
     assert dataclasses.replace(config.roku, host="10.0.0.5").base_url.startswith(
         "http://10.0.0.5"
     )
+
+
+def test_the_app_gate_does_not_query_the_tv_on_the_capture_thread():
+    """A blocking HTTP GET between stream.read() calls overflows the ALSA buffer.
+
+    The poller answers from cache; process_window must never reach the network.
+    """
+    from admuter.controller import AppGatePoller
+
+    config = make_config(
+        roku={"armed_apps_only": True}, controller={"app_check_seconds": 0.0}
+    )
+    roku = FakeRoku(app=NETFLIX)
+    controller, _, _ = build([(Event.NO_CHANGE, False)], config=config, roku=roku)
+
+    poller = AppGatePoller(roku, interval_seconds=1.0)
+    poller._app, poller._answered = ActiveApp(NETFLIX, "Netflix"), True
+    controller._app_poller = poller
+
+    before = roku.app_queries
+    for i in range(20):
+        controller.process_window(window(i))
+    assert roku.app_queries == before, "process_window queried the TV directly"
+
+
+def test_an_unanswered_poller_holds_the_previous_arm_state():
+    """A TV that has not replied yet is not a TV that is off."""
+    from admuter.controller import AppGatePoller
+
+    config = make_config(
+        roku={"armed_apps_only": True}, controller={"app_check_seconds": 0.0}
+    )
+    roku = FakeRoku(app=NETFLIX)
+    controller, _, _ = build([(Event.NO_CHANGE, False)], config=config, roku=roku)
+    controller._armed = True
+    controller._app_poller = AppGatePoller(roku, interval_seconds=1.0)  # never started
+    controller.process_window(window(0))
+    assert controller._armed is True
