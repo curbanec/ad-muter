@@ -15,7 +15,7 @@ from . import __version__
 from .capture import AudioCapture, CaptureError
 from .config import Config, ConfigError
 from .controller import Controller
-from .detector import HeuristicDetector
+from .seam_door import build_detector
 from .logging_setup import build_feature_logger, setup_logging
 from .ml_detector import load_voter
 from .transcript import load_transcript_voter
@@ -92,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         log.warning("dry-run: mute/unmute commands will be logged, not sent")
 
     capture = AudioCapture(config.audio)
-    detector = HeuristicDetector(
+    detector = build_detector(
         config.detection,
         config.audio.window_seconds,
         ml_voter=load_voter(config.detection),

@@ -42,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from admuter.capture import AudioWindow, wav_windows  # noqa: E402
 from admuter.config import Config, ConfigError  # noqa: E402
 from admuter.controller import Controller  # noqa: E402
-from admuter.detector import HeuristicDetector  # noqa: E402
+from admuter.seam_door import build_detector  # noqa: E402
 from admuter.logging_setup import setup_logging  # noqa: E402
 from admuter.ml_detector import load_voter  # noqa: E402
 from admuter.transcript import load_transcript_voter  # noqa: E402
@@ -171,7 +171,7 @@ def overlap(a: Span, b: tuple[float, float]) -> float:
 def score(pairs, config: Config) -> dict:
     roku = RecordingRoku()
     source = SessionSource(pairs, config.audio.window_seconds, roku)
-    detector = HeuristicDetector(
+    detector = build_detector(
         config.detection,
         config.audio.window_seconds,
         ml_voter=load_voter(config.detection),

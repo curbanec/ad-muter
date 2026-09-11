@@ -87,6 +87,10 @@ class AudioConfig:
 class DetectionConfig:
     """Heuristic thresholds. See the tuning guide in README.md."""
 
+    # Which detector runs. "legacy" is the per-window heuristic plus its
+    # voters; "seam_door" judges only at seams and ignores the voters entirely.
+    mode: str = "legacy"
+
     # Near-silence
     silence_dbfs: float = -60.0
 
@@ -170,6 +174,19 @@ class DetectionConfig:
     fingerprint_enabled: bool = False
     fingerprint_max_ber: float = 0.35
 
+    # Seam-door detector (mode: seam_door). Starting values come from
+    # scripts/seam_report.py over the five annotated sessions.
+    door_before_seconds: float = 10.0     # show level is the median of this
+    door_after_seconds: float = 3.0       # ...judged against the median of this
+    # A break start steps a median +1.7 dB against -0.3 dB for a content seam,
+    # so no threshold is clean. 3.0 is the knee: 9 of 25 break starts, against
+    # 53 false doors per content hour. 5.0 gives 8 of 25 for 25 false doors.
+    door_enter_step_db: float = 3.0
+    # Audio after an inside-break seam sits about +4.4 dB above show level;
+    # after a break-end seam, -1.1 dB. 2.0 sits between them.
+    door_exit_margin_db: float = 2.0
+    door_fallback_seconds: float = 15.0   # exit without a seam if quiet this long
+
     # Ad lifetime
     ad_end_windows: int = 2
     min_ad_seconds: float = 5.0
@@ -189,6 +206,16 @@ class DetectionConfig:
             )
 
     def validate(self) -> None:
+        if self.mode not in ("legacy", "seam_door"):
+            raise ConfigError(
+                f"detection.mode must be 'legacy' or 'seam_door', got {self.mode!r}"
+            )
+        if self.door_before_seconds <= 0 or self.door_after_seconds <= 0:
+            raise ConfigError(
+                "detection.door_before_seconds and door_after_seconds must be positive"
+            )
+        if self.door_fallback_seconds <= 0:
+            raise ConfigError("detection.door_fallback_seconds must be positive")
         if self.silence_dbfs >= 0:
             raise ConfigError("detection.silence_dbfs must be negative (dBFS)")
         if self.min_gap_seconds <= 0:

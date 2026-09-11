@@ -87,6 +87,72 @@ def score_once(
     return json.loads(fresh[-1].read_text(encoding="utf-8"))
 
 
+MIN_WORST_RECALL = 50.0
+
+
+def pick(rows: list[dict]) -> str | None:
+    """The existing rule: keep worst-session recall above 50%, then lowest false mute.
+
+    The floor matters. Without it the search is degenerate -- muting nothing
+    scores a perfect false-mute number and catches no breaks at all.
+    """
+    eligible = [r for r in rows
+                if min(s["recall_pct"] for s in r["sessions"]) >= MIN_WORST_RECALL]
+    pool = eligible or rows
+    best = min(pool, key=lambda r: r["worst_false_mute_per_content_hour"])
+    return best["swept_value"]
+
+
+def render_held_out(key: str, runs: list[tuple[str, dict]]) -> None:
+    """Pick each session's value using only the OTHER sessions, then score it there.
+
+    Choosing a threshold by looking at every session and then reporting how it
+    does on those same sessions measures fit, not skill. This costs no extra
+    decoding: the per-session numbers for every value are already computed.
+    """
+    if len(runs) < 2:
+        return
+    payloads = [p for _, p in runs]
+    session_ids = [s["session_id"] for s in payloads[0]["sessions"]]
+    if len(session_ids) < 2:
+        return
+
+    print(f"\n{key} — held out, one session at a time")
+    print(f"  {'held-out session':<30}{'picked on others':>18}"
+          f"{'its false mute/hr':>20}{'its recall':>12}")
+    print("  " + "-" * 78)
+
+    picks = []
+    for held in session_ids:
+        rows = []
+        for payload in payloads:
+            others = [s for s in payload["sessions"] if s["session_id"] != held]
+            rows.append({
+                "swept_value": payload["swept_value"],
+                "sessions": others,
+                "worst_false_mute_per_content_hour": max(
+                    s["false_mute_per_content_hour"] for s in others
+                ),
+            })
+        chosen = pick(rows)
+        picks.append(chosen)
+        scored = next(
+            s for p in payloads if p["swept_value"] == chosen
+            for s in p["sessions"] if s["session_id"] == held
+        )
+        print(f"  {held:<30}{chosen:>18}"
+              f"{scored['false_mute_per_content_hour']:>19.0f}s"
+              f"{scored['recall_pct']:>11.0f}%")
+
+    unique = sorted(set(picks))
+    print()
+    if len(unique) == 1:
+        print(f"  every round picked {unique[0]} — probably a stable setting")
+    else:
+        print(f"  rounds disagreed ({', '.join(unique)}) — this knob is fitting "
+              f"noise, not signal")
+
+
 def render(key: str, runs: list[tuple[str, dict]]) -> None:
     """Per-session false mute per content hour, one row per swept value."""
     if not runs:
@@ -134,11 +200,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--results-dir", type=Path, default=ROOT / "results" / "sweep",
                         help="where the per-value result JSON goes")
     parser.add_argument("--python", default=sys.executable)
+    parser.add_argument("--set", dest="fixed", action="append", default=[],
+                        metavar="section.key=value",
+                        help="hold another key at a value for every run in the "
+                             "sweep (e.g. detection.mode=seam_door)")
+    parser.add_argument("--held-out", action="store_true",
+                        help="also pick each session's value using only the others")
     parser.add_argument("--out", type=Path,
                         help="also write the collected runs here as JSON")
     args = parser.parse_args(argv)
 
     base = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    # Applied to the base before sweeping, so every run in the sweep shares
+    # them. Lets a sweep run under a non-default mode without editing the
+    # committed config.
+    for fixed in args.fixed:
+        dotted, _, value = fixed.partition("=")
+        base = config_with(base, dotted, value)
+    if args.fixed:
+        print("held fixed: " + ", ".join(args.fixed))
     values = [v.strip() for v in args.values.split(",") if v.strip()]
     args.results_dir.mkdir(parents=True, exist_ok=True)
 
@@ -161,6 +241,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  worst {worst:.0f}s/content-hr, breaks {caught}/{total}", flush=True)
 
     render(args.key, runs)
+    if args.held_out:
+        render_held_out(args.key, runs)
     if args.out:
         args.out.write_text(
             json.dumps([p for _, p in runs], indent=2) + "\n", encoding="utf-8"

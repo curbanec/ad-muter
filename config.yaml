@@ -18,6 +18,11 @@ audio:
   retry_max_seconds: 30.0
 
 detection:
+  # Which detector runs.
+  #   legacy    the per-window heuristic (plus voters, all currently off)
+  #   seam_door judge only at seams; ignores the voters entirely
+  mode: "legacy"
+
   # A frame quieter than this counts as near-silence.
   silence_dbfs: -50.0
 
@@ -105,6 +110,22 @@ detection:
   # of these knobs -- so 9 stays, on break count and latency rather than on the
   # headline number.
   loudness_median_windows: 9
+
+  # --- Seam-door detector (mode: seam_door only) ---
+  # Starting values from scripts/seam_report.py over the five sessions. It
+  # measures show level over door_before_seconds, then the audio over
+  # door_after_seconds following a seam, and compares.
+  #
+  # A break start steps a median +1.7 dB against -0.3 dB for a content seam, so
+  # no enter threshold is clean: 3.0 catches 9 of 25 break starts and opens 53
+  # false doors per content hour. Audio after an inside-break seam sits about
+  # +4.4 dB above show level and after a break-end seam -1.1 dB, so the exit
+  # margin sits between them.
+  door_before_seconds: 10.0
+  door_after_seconds: 3.0
+  door_enter_step_db: 3.0
+  door_exit_margin_db: 2.0
+  door_fallback_seconds: 15.0
 
   # --- ML voter: SHADOW MODE ---
   # Disabled pending the simplification work. It stays loaded so it keeps

@@ -29,6 +29,7 @@ from admuter.capture import AudioWindow, wav_windows  # noqa: E402
 from admuter.config import Config, ConfigError  # noqa: E402
 from admuter.controller import Controller  # noqa: E402
 from admuter.detector import Decision, Event, HeuristicDetector  # noqa: E402
+from admuter.seam_door import build_detector  # noqa: E402
 from admuter.features import Features  # noqa: E402
 from admuter.logging_setup import FeatureLogger, setup_logging  # noqa: E402
 from admuter.ml_detector import load_voter  # noqa: E402
@@ -133,7 +134,7 @@ def apply_overrides(config: Config, overrides: list[str]) -> Config:
 
 def replay(path: Path, config: Config, args: argparse.Namespace) -> int:
     detector = TapDetector(
-        HeuristicDetector(
+        build_detector(
             config.detection,
             config.audio.window_seconds,
             ml_voter=load_voter(config.detection),
