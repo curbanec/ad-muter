@@ -174,6 +174,9 @@ class HeuristicDetector:
         self._cue_gap = 0.0
         self._last_voiced: Features | None = None
         self._non_ad_streak = 0
+        # When the current run of non-ad windows began, so a seam arriving
+        # during the ad-ending countdown can be told from an older one.
+        self._streak_started_at: float | None = None
         self._loudness: deque[float] = deque(maxlen=config.loudness_median_windows)
         self._fp_hold_until: float | None = None
 
@@ -210,6 +213,7 @@ class HeuristicDetector:
             self._cue_at = None
             self._cue_gap = 0.0
         self._non_ad_streak = 0
+        self._streak_started_at = None
 
     @property
     def in_ad(self) -> bool:
@@ -491,7 +495,12 @@ class HeuristicDetector:
         if profile and cue_active:
             self._in_ad = True
             self._ad_started_at = timestamp
-            self._cue_at = None
+            # The cue is deliberately NOT cleared here. The controller may still
+            # decline to act -- confirmation can fail several windows later --
+            # and it then calls reject(keep_cue=True) expecting a cue to keep.
+            # Clearing it on the way in made that keep a no-op, and the rest of
+            # the break logged "ad profile without a transition cue". The cue
+            # expires on its own through cue_grace_seconds.
             self._non_ad_streak = 0
             return Decision(
                 event=Event.AD_STARTED,
@@ -557,6 +566,7 @@ class HeuristicDetector:
 
         if profile:
             self._non_ad_streak = 0
+            self._streak_started_at = None
             return Decision(
                 event=Event.NO_CHANGE,
                 timestamp=timestamp,
@@ -566,12 +576,24 @@ class HeuristicDetector:
                 metrics=metrics,
             )
 
+        if self._non_ad_streak == 0:
+            self._streak_started_at = timestamp
         self._non_ad_streak += 1
         if (
             self._non_ad_streak >= cfg.ad_end_windows
             and elapsed >= cfg.min_ad_seconds
         ):
-            self.reject()
+            # A seam that arrived *during* this countdown belongs to the break
+            # we are still in -- it is the join between two spots. Discarding it
+            # means the next spot cannot re-enter until yet another seam, which
+            # inside a break may never come. A cue armed before the countdown
+            # started is stale and is still dropped.
+            fresh_cue = (
+                self._cue_at is not None
+                and self._streak_started_at is not None
+                and self._cue_at >= self._streak_started_at
+            )
+            self.reject(keep_cue=fresh_cue)
             # The first content windows re-seed the baseline immediately, so a
             # long ad block does not leave us comparing against stale numbers.
             if not features.is_silence:

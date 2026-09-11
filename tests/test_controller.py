@@ -448,7 +448,9 @@ def test_csv_feature_log_has_a_single_header(tmp_path):
     controller.shutdown()
     rows = path.read_text().strip().splitlines()
     assert len(rows) == 4
-    assert rows[0].startswith("index,timestamp,state")
+    # wall_time sits between index and timestamp as of the 1e change: the
+    # monotonic timestamp cannot be lined up against "the break around 8:15".
+    assert rows[0].startswith("index,wall_time,timestamp,state")
 
 
 # --------------------------------------------------------------------------- #
@@ -571,3 +573,39 @@ def test_failed_confirmation_keeps_the_transition_cue():
         controller.process_window(window(i))
     assert detector.rejects >= 1
     assert detector.kept_cue is True
+
+
+def test_every_feature_row_carries_a_readable_wall_time(tmp_path):
+    """time.monotonic() cannot be matched against "the break around 8:15"."""
+    import json
+    from datetime import datetime
+
+    from admuter.logging_setup import FeatureLogger
+
+    path = tmp_path / "features.jsonl"
+    controller = Controller(
+        FakeCapture([]), ScriptedDetector([(Event.NO_CHANGE, False)]),
+        FakeRoku(), make_config(), FeatureLogger(path, "jsonl"),
+    )
+    drive(controller, 3)
+    controller.shutdown()
+
+    rows = [json.loads(line) for line in path.read_text().strip().splitlines()]
+    assert rows, "no rows written"
+    for row in rows:
+        stamp = datetime.fromisoformat(row["wall_time"])
+        assert stamp.microsecond == 0, "seconds precision only"
+        assert stamp.tzinfo is not None, "local offset should be recorded"
+
+
+def test_a_csv_log_predating_wall_time_is_moved_aside(tmp_path):
+    """Appending under a stale header writes values beneath wrong headings."""
+    from admuter.logging_setup import FeatureLogger
+
+    path = tmp_path / "features.csv"
+    path.write_text("index,timestamp,state\n1,0.0,CONTENT\n", encoding="utf-8")
+    FeatureLogger(path, "csv").close()
+
+    rotated = tmp_path / "features.pre-wall_time.csv"
+    assert rotated.exists(), "old rows were destroyed rather than kept"
+    assert "1,0.0,CONTENT" in rotated.read_text()

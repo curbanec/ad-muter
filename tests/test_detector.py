@@ -379,3 +379,97 @@ def test_decision_metrics_expose_the_tuning_numbers(detector):
     assert decision.metrics["loudness_delta_db"] == pytest.approx(5.0)
     assert decision.metrics["crest_delta_db"] == pytest.approx(5.0)
     assert decision.metrics["baseline_rms_dbfs"] == pytest.approx(-20.0)
+
+
+# --------------------------------------------------------------------------- #
+# The cue must outlive a rejected AD_STARTED
+# --------------------------------------------------------------------------- #
+
+
+def test_the_cue_survives_a_rejected_ad_start(config):
+    """AD_STARTED used to clear the cue, so reject(keep_cue=True) kept nothing.
+
+    The controller only learns that confirmation failed several windows after
+    the detector fired, and by then the seam was already thrown away — leaving
+    the rest of the break unreachable.
+    """
+    config = dataclasses.replace(config, cue_grace_seconds=20.0)
+    detector = HeuristicDetector(config, WINDOW)
+    t = warm(detector)
+
+    assert detector.update(AD_AFTER_GAP, t).event is Event.AD_STARTED
+    assert detector._cue_at is not None, "the cue was cleared on the way in"
+
+    # The controller declines and asks for the cue to be kept.
+    detector.reject(keep_cue=True)
+    assert not detector.in_ad
+
+    # An ad-like window still inside the grace period must fire again, with no
+    # second seam — there is never another seam in the middle of a break.
+    again = detector.update(AD, t + WINDOW)
+    assert again.event is Event.AD_STARTED
+
+
+def test_a_plain_reject_still_clears_the_cue(config):
+    config = dataclasses.replace(config, cue_grace_seconds=20.0)
+    detector = HeuristicDetector(config, WINDOW)
+    t = warm(detector)
+    assert detector.update(AD_AFTER_GAP, t).event is Event.AD_STARTED
+
+    detector.reject()
+    assert detector._cue_at is None
+    assert detector.update(AD, t + WINDOW).event is Event.NO_CHANGE
+
+
+def test_the_cue_still_expires_on_its_own(config):
+    """Not clearing it on entry must not make it immortal."""
+    config = dataclasses.replace(config, cue_grace_seconds=3.0)
+    detector = HeuristicDetector(config, WINDOW)
+    t = warm(detector)
+    assert detector.update(AD_AFTER_GAP, t).event is Event.AD_STARTED
+    detector.reject(keep_cue=True)
+    assert detector.update(AD, t + 10 * WINDOW).event is Event.NO_CHANGE
+
+
+def test_a_seam_during_the_ad_ending_countdown_is_kept(config):
+    """The join between two spots in one break must survive the countdown.
+
+    A break is several spots with silent joins between them. If the join that
+    lands while the previous spot is timing out gets discarded, the next spot
+    cannot re-enter until another seam arrives — and inside a break there may
+    not be one.
+    """
+    config = dataclasses.replace(
+        config, ad_end_windows=3, min_ad_seconds=0.0, cue_grace_seconds=20.0
+    )
+    detector = HeuristicDetector(config, WINDOW)
+    t = warm(detector)
+    assert detector.update(AD_AFTER_GAP, t).event is Event.AD_STARTED
+    armed_on_entry = detector._cue_at
+
+    # Countdown starts, a silent join lands inside it, and the window after the
+    # join is abrupt enough to arm a cue (a gap alone is not a cue).
+    detector.update(CONTENT, t + 1)
+    detector.update(SILENT_WINDOW, t + 2)
+    quiet = make_features(rms_dbfs=-30.0, crest_db=14.0)
+    ended = detector.update(quiet, t + 3)
+
+    assert ended.event is Event.AD_ENDED
+    assert detector._cue_at is not None, "the in-countdown seam was discarded"
+    assert detector._cue_at != armed_on_entry, "that is the old cue, not the join"
+
+
+def test_a_seam_from_before_the_countdown_is_discarded(config):
+    """Only a cue armed at or after the first non-ad window survives."""
+    config = dataclasses.replace(
+        config, ad_end_windows=3, min_ad_seconds=0.0, cue_grace_seconds=60.0
+    )
+    detector = HeuristicDetector(config, WINDOW)
+    t = warm(detector)
+    assert detector.update(AD_AFTER_GAP, t).event is Event.AD_STARTED
+    assert detector._cue_at is not None  # armed at entry, before any countdown
+
+    for i in range(3):
+        ended = detector.update(CONTENT, t + 1 + i)
+    assert ended.event is Event.AD_ENDED
+    assert detector._cue_at is None, "a cue older than the countdown was kept"

@@ -10,6 +10,7 @@ is most of a labelled training set once you annotate the ad spans.
 from __future__ import annotations
 
 import csv
+from datetime import datetime
 import json
 import logging
 import sys
@@ -37,6 +38,11 @@ def setup_logging(level: str = "INFO", stream: TextIO | None = None) -> None:
     logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
+_featurelog = logging.getLogger(__name__)
+
+WALL_TIME_FIELD = "wall_time"
+
+
 class FeatureLogger:
     """Appends one row per window to JSONL or CSV."""
 
@@ -47,9 +53,45 @@ class FeatureLogger:
         self.path = Path(path)
         self.format = fmt
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if fmt == "csv":
+            self._rotate_if_header_is_stale()
         self._fh: TextIO = self.path.open("a", encoding="utf-8", newline="")
         self._writer: csv.DictWriter | None = None
         self._closed = False
+
+    def _rotate_if_header_is_stale(self) -> None:
+        """Move an old CSV aside if its header predates a column we now write.
+
+        Appending new columns to a file whose header lacks them writes values
+        under the wrong headings, which is worse than losing the file: the data
+        looks fine and is silently wrong. Rotating keeps the old rows readable
+        and starts a clean file.
+        """
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            return
+        try:
+            with self.path.open("r", encoding="utf-8", newline="") as handle:
+                header = next(csv.reader(handle), [])
+        except OSError:
+            return
+        if WALL_TIME_FIELD in header:
+            return
+        rotated = self.path.with_name(
+            f"{self.path.stem}.pre-{WALL_TIME_FIELD}{self.path.suffix}"
+        )
+        n = 1
+        while rotated.exists():
+            rotated = self.path.with_name(
+                f"{self.path.stem}.pre-{WALL_TIME_FIELD}.{n}{self.path.suffix}"
+            )
+            n += 1
+        try:
+            self.path.rename(rotated)
+            _featurelog.info("feature log header predates %s; moved old rows to %s",
+                     WALL_TIME_FIELD, rotated.name)
+        except OSError:  # pragma: no cover - defensive
+            _featurelog.warning("could not rotate %s; %s will be missing from new rows",
+                        self.path, WALL_TIME_FIELD)
 
     def log(
         self,
@@ -66,6 +108,12 @@ class FeatureLogger:
             return
         row: dict[str, Any] = {
             "index": index,
+            # timestamp is time.monotonic(): fine for arithmetic, useless for
+            # lining a row up with "the break around 8:15". wall_time is what
+            # a human reads the log against.
+            WALL_TIME_FIELD: datetime.now().astimezone().replace(
+                microsecond=0
+            ).isoformat(),
             "timestamp": round(timestamp, 3),
             "state": state,
             "muted": muted,

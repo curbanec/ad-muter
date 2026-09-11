@@ -32,6 +32,7 @@ import json
 import statistics
 import subprocess
 import sys
+import wave
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -95,6 +96,21 @@ class RecordingRoku:
         pass
 
 
+def wav_duration(path) -> float:
+    """A chunk's exact length in seconds.
+
+    Both clocks in this file -- the one that timestamps windows and the one
+    that places label spans -- advance by this and only this. They used to
+    disagree: the window clock credited the final, partial window of each chunk
+    a whole window_seconds, while the label clock used the exact frame count.
+    Every chunk that is not a whole number of windows pushed them apart, and
+    the error accumulated across a session, so labels and mutes were compared
+    on two different timelines.
+    """
+    with wave.open(str(path), "rb") as handle:
+        return handle.getnframes() / handle.getframerate()
+
+
 class SessionSource:
     """Every chunk's windows, renumbered onto one continuous session clock."""
 
@@ -108,7 +124,6 @@ class SessionSource:
         elapsed = 0.0
         index = 0
         for wav, _ in self.pairs:
-            consumed = 0.0
             for window in wav_windows(wav, self.window_seconds):
                 t = elapsed + window.timestamp
                 self.roku.timestamp = t
@@ -122,8 +137,8 @@ class SessionSource:
                     stream_restarted=index == 0,
                 )
                 index += 1
-                consumed = window.timestamp + self.window_seconds
-            elapsed += consumed
+            # Exact chunk length, not the last window's nominal end.
+            elapsed += wav_duration(wav)
         self.duration = elapsed
 
     def stop(self) -> None:
@@ -138,8 +153,7 @@ def session_spans(pairs, window_seconds: float) -> list[Span]:
         for span in parse_labels(label_path):
             if span.label in AD_LABELS:
                 spans.append(Span(span.start + elapsed, span.end + elapsed, "ad"))
-        with __import__("wave").open(str(wav), "rb") as w:
-            elapsed += w.getnframes() / w.getframerate()
+        elapsed += wav_duration(wav)
     # Stitch spans that meet at a chunk boundary back into one break.
     merged: list[Span] = []
     for span in sorted(spans, key=lambda s: s.start):
