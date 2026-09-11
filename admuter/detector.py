@@ -118,6 +118,59 @@ def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
 
 
+class SeamTracker:
+    """Where one piece of audio was joined to another.
+
+    A seam is a short silent gap: long enough to be a join, short enough not to
+    be a pause in the programme. Server-side ad stitching leaves one at every
+    boundary, including between consecutive spots inside a break.
+
+    This exists as its own class so that the detector and any measurement of
+    seams share one definition. A report that counted seams slightly
+    differently from the detector would be measuring something the detector
+    cannot act on.
+    """
+
+    def __init__(self, min_gap_seconds: float, max_gap_seconds: float) -> None:
+        self.min_gap_seconds = min_gap_seconds
+        self.max_gap_seconds = max_gap_seconds
+        self._carry = 0.0
+
+    def reset(self) -> None:
+        self._carry = 0.0
+
+    @property
+    def carry_seconds(self) -> float:
+        """Silence still in progress at the window edge."""
+        return self._carry
+
+    def gap(self, features: Features) -> float:
+        """Length of a silent stretch that ENDED inside this window, else 0.
+
+        A run still going at the window edge is carried forward rather than
+        reported early, so a gap spanning a boundary is counted once and at its
+        true length.
+        """
+        if features.silence_ratio >= 0.999:
+            self._carry += features.duration_seconds
+            return 0.0
+        completed = max(
+            self._carry + features.leading_silence_seconds,
+            features.interior_silence_seconds,
+        )
+        self._carry = features.trailing_silence_seconds
+        return completed
+
+    def qualifies(self, gap: float) -> bool:
+        """Is a completed gap the right length to be a seam?"""
+        return self.min_gap_seconds <= gap <= self.max_gap_seconds
+
+    def seam(self, features: Features) -> float:
+        """The gap if this window completed a qualifying seam, else 0.0."""
+        gap = self.gap(features)
+        return gap if self.qualifies(gap) else 0.0
+
+
 class HeuristicDetector:
     """Rule-based Phase 1 detector.
 
@@ -169,7 +222,7 @@ class HeuristicDetector:
         self.baseline = Baseline()
         self._in_ad = False
         self._ad_started_at: float | None = None
-        self._carry_silence = 0.0
+        self._seams = SeamTracker(config.min_gap_seconds, config.max_gap_seconds)
         self._cue_at: float | None = None
         self._cue_gap = 0.0
         self._last_voiced: Features | None = None
@@ -188,7 +241,7 @@ class HeuristicDetector:
         """Full reset, including the learned baseline."""
         self.baseline = Baseline()
         self.reject()
-        self._carry_silence = 0.0
+        self._seams.reset()
         self._last_voiced = None
         self._loudness.clear()
         self._fp_hold_until = None
@@ -285,23 +338,8 @@ class HeuristicDetector:
     # ------------------------------------------------------------------ #
 
     def _track_silence(self, features: Features) -> float:
-        """Stitch silent runs across window boundaries; return a completed gap.
-
-        Returns the length in seconds of a silent stretch that ended inside this
-        window (0.0 if none ended here). A run still in progress at the window
-        edge is carried forward instead of being reported early.
-        """
-        fully_silent = features.silence_ratio >= 0.999
-        if fully_silent:
-            self._carry_silence += features.duration_seconds
-            return 0.0
-
-        completed = max(
-            self._carry_silence + features.leading_silence_seconds,
-            features.interior_silence_seconds,
-        )
-        self._carry_silence = features.trailing_silence_seconds
-        return completed
+        """Delegates to SeamTracker so the report and the detector agree."""
+        return self._seams.gap(features)
 
     def _maybe_arm_cue(
         self, features: Features, timestamp: float, gap: float
@@ -312,7 +350,7 @@ class HeuristicDetector:
             self._cue_at = timestamp
             self._cue_gap = gap
             return gap
-        if not (cfg.min_gap_seconds <= gap <= cfg.max_gap_seconds):
+        if not self._seams.qualifies(gap):
             return 0.0
 
         before = self._last_voiced

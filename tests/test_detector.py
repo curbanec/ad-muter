@@ -473,3 +473,75 @@ def test_a_seam_from_before_the_countdown_is_discarded(config):
         ended = detector.update(CONTENT, t + 1 + i)
     assert ended.event is Event.AD_ENDED
     assert detector._cue_at is None, "a cue older than the countdown was kept"
+
+
+# --------------------------------------------------------------------------- #
+# SeamTracker — one definition of a seam, shared with the reports
+# --------------------------------------------------------------------------- #
+
+
+def test_a_gap_inside_one_window_is_reported_at_once():
+    from admuter.detector import SeamTracker
+
+    tracker = SeamTracker(0.2, 1.5)
+    assert tracker.gap(make_features(interior=0.4, silence_ratio=0.4)) == pytest.approx(0.4)
+
+
+def test_a_gap_spanning_a_window_boundary_is_stitched():
+    """Counted once, at its true length, not twice at half each."""
+    from admuter.detector import SeamTracker
+
+    tracker = SeamTracker(0.2, 1.5)
+    assert tracker.gap(make_features(trailing=0.3, silence_ratio=0.3)) == 0.0
+    stitched = tracker.gap(make_features(leading=0.4, silence_ratio=0.4))
+    assert stitched == pytest.approx(0.7)
+
+
+def test_a_fully_silent_window_is_carried_not_reported():
+    from admuter.detector import SeamTracker
+
+    tracker = SeamTracker(0.2, 1.5)
+    assert tracker.gap(SILENT_WINDOW) == 0.0
+    assert tracker.carry_seconds == pytest.approx(WINDOW)
+    # ...and lands in full when voiced audio returns.
+    assert tracker.gap(make_features(leading=0.2, silence_ratio=0.2)) == pytest.approx(1.2)
+
+
+def test_qualifies_bounds_are_inclusive():
+    from admuter.detector import SeamTracker
+
+    tracker = SeamTracker(0.2, 1.5)
+    assert tracker.qualifies(0.2) and tracker.qualifies(1.5)
+    assert not tracker.qualifies(0.19) and not tracker.qualifies(1.51)
+
+
+def test_seam_returns_zero_for_a_gap_of_the_wrong_length():
+    from admuter.detector import SeamTracker
+
+    tracker = SeamTracker(0.2, 1.5)
+    assert tracker.seam(make_features(interior=0.05, silence_ratio=0.05)) == 0.0
+    tracker.reset()
+    assert tracker.seam(make_features(interior=0.4, silence_ratio=0.4)) == pytest.approx(0.4)
+
+
+def test_reset_drops_carried_silence():
+    from admuter.detector import SeamTracker
+
+    tracker = SeamTracker(0.2, 1.5)
+    tracker.gap(SILENT_WINDOW)
+    tracker.reset()
+    assert tracker.carry_seconds == 0.0
+    assert tracker.gap(make_features(leading=0.3, silence_ratio=0.3)) == pytest.approx(0.3)
+
+
+def test_the_detector_and_a_standalone_tracker_agree_window_for_window(config):
+    """The extraction must be behaviour-preserving, not merely test-passing."""
+    from admuter.detector import SeamTracker
+
+    sequence = [CONTENT, SILENT_WINDOW, AD_AFTER_GAP, AD, SILENT_WINDOW,
+                SILENT_WINDOW, CONTENT, make_features(trailing=0.4, silence_ratio=0.4),
+                make_features(leading=0.5, silence_ratio=0.5), CONTENT]
+    detector = HeuristicDetector(config, WINDOW)
+    tracker = SeamTracker(config.min_gap_seconds, config.max_gap_seconds)
+    for features in sequence:
+        assert detector._track_silence(features) == tracker.gap(features)
